@@ -5,9 +5,12 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=7022ece
-ADOCAO_COMMIT_FULL=7022ece334e3bc95f7dc01e153f6ff97324435e7
+ADOCAO_COMMIT=6bca38b
+ADOCAO_COMMIT_FULL=6bca38bc2085cb18c5bcf7c8225bf815762d44e5
 ADOCAO_COMMIT_DATE=2026-10-06
+# 6bca38b 修了本库 CI 暴露的 lzma_mt 兼容问题（改为按字段探测，不再按版本号判），
+# 并带来 archive/LzmaMtCompat.hpp + tests/lzma_mt_compat_test.cpp。
+#
 # 历史重写那笔（"去掉机器绝对路径：本地谱面改用 $ADOCAO_CHARTS/~ 相对形式"）=
 #   918ef3b / 918ef3bd0e911f8600354252054cfd904791843b
 # 本库镜像的 78 个文件与 918ef3b 逐字节一致，而 918ef3b..HEAD 对白名单区域没有任何改动

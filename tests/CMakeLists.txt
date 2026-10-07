@@ -1,7 +1,63 @@
 # 本库自己的测试。
 #
-# P2 有：headless 冒烟 + WAV 结构 + 压缩容器两向，以及从 ADOCAO 镜像来的解析对拍测试。
-# 还没搬：tile_geometry / tile_expansion / geom_probe（都要 render，随 P5）。
+# 解析对拍 + headless 那几条（core/archive/audio），以及 render=ON 时的三层几何验收。
+
+# ── 三层几何（全部要 render；上游 PLAN.md §7 的"改几何必须三层全绿"）────────────
+if(ADOFAI_LIB_ENABLE_RENDER)
+    # L0 中旋五边形不变量 + **源码级调用点护栏**：把 render/TileMesh.cpp 当数据读，
+    # 断言它走 TileShape::buildShape()、且没有退回 createTileMesh/createMidSpinMesh。
+    # 所以它需要 TileGeometryReference（参考几何）当负向对照。
+    add_executable(adofai_tile_geometry_test tile_geometry_test.cpp)
+    target_link_libraries(adofai_tile_geometry_test PRIVATE adofai_tile_reference)
+    # 它用叶子名 include "TileGeometry.hpp" / "TileMesh.hpp"（上游靠 -I render/ 解决）
+    target_include_directories(adofai_tile_geometry_test PRIVATE
+        "${ADOFAI_LIB_SRC_ROOT}/render")
+    add_test(NAME tile_geometry
+        COMMAND adofai_tile_geometry_test
+                "${ADOFAI_LIB_SRC_ROOT}/render/TileMesh.cpp")
+
+    # L1 CPU 逐位对拍：形状表展开 vs 参考实现（3.3e7 坐标）。TileShape.cpp 不碰 GL。
+    add_executable(adofai_tile_expansion_test
+        tile_expansion_test.cpp
+        "${ADOFAI_LIB_SRC_ROOT}/render/TileShape.cpp")
+    target_link_libraries(adofai_tile_expansion_test PRIVATE
+        ADOFAI::core adofai_tile_reference)
+    target_include_directories(adofai_tile_expansion_test PRIVATE
+        "${ADOFAI_LIB_SRC_ROOT}/render")
+    add_test(NAME tile_expansion
+        COMMAND adofai_tile_expansion_test
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai"
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/shapes_exhaustive.adofai")
+
+    # L2 GPU 逐位对拍：真跑 assets/shaders/tile.vert，把局部坐标读回来与 CPU 的展开比。
+    # 需要 GL 上下文；没有显示/驱动时测试自己 SKIP 退 0（headless CI 不会红）。
+    add_executable(adofai_geom_probe_test
+        geom_probe_test.cpp
+        "${ADOFAI_LIB_SRC_ROOT}/render/TileShape.cpp")
+    target_link_libraries(adofai_geom_probe_test PRIVATE ADOFAI::core ADOFAI::glad glfw)
+    target_include_directories(adofai_geom_probe_test PRIVATE
+        "${ADOFAI_LIB_SRC_ROOT}/render")
+    # glad 是手写的最小加载器（没有 glReadPixels/glFinish），探针直接用平台 GL。
+    if(WIN32)
+        target_link_libraries(adofai_geom_probe_test PRIVATE opengl32)
+    elseif(APPLE)
+        target_link_libraries(adofai_geom_probe_test PRIVATE "-framework OpenGL")
+    else()
+        target_link_libraries(adofai_geom_probe_test PRIVATE OpenGL::GL ${CMAKE_DL_LIBS})
+    endif()
+    add_test(NAME geom_probe
+        COMMAND adofai_geom_probe_test
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai"
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/shapes_exhaustive.adofai")
+
+    # geom_probe 按 CWD 找 assets/shaders/（与 app 的资产查找同序），而 ctest 在构建目录跑
+    # —— 把 shader 资产拷过去，否则它拿不到 tile.vert（那会让 L2 变成静默 SKIP）。
+    add_custom_command(TARGET adofai_geom_probe_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_SOURCE_DIR}/assets/shaders"
+                "$<TARGET_FILE_DIR:adofai_geom_probe_test>/assets/shaders"
+        COMMENT "拷贝 assets/shaders 到构建目录（geom_probe 按 CWD 找它）")
+endif()
 
 # ── 解析对拍（从 ADOCAO 镜像）──────────────────────────────────────────────
 # 快路径必须与 cleanJson + RapidJSON 老路径逐位一致；对每个明文 fixture 还会在内存里压成
@@ -34,6 +90,14 @@ if(ADOFAI_LIB_ENABLE_ARCHIVE)
 else()
     message(STATUS "ARCHIVE=OFF：跳过 level_parse_parity（它按设计要直接建压缩容器）")
 endif()
+
+# lzma_mt 内存字段的跨版本兼容（liblzma 5.4 起 `memlimit` 拆成
+# memlimit_threading/memlimit_stop）：纯编译期选择 + 断言，**不依赖压缩库、不链任何 target**，
+# 所以 ARCHIVE=OFF 时也照跑。它挡的是"按版本号判字段、于是 5.4/5.5 的系统库编不过"这类回归
+# —— 本库的 linux-system-deps 真红过一次，而内嵌的 5.6.3 在本地永远看不出来。
+add_executable(adofai_lzma_mt_compat_test lzma_mt_compat_test.cpp)
+target_include_directories(adofai_lzma_mt_compat_test PRIVATE "${ADOFAI_LIB_SRC_ROOT}")
+add_test(NAME lzma_mt_compat COMMAND adofai_lzma_mt_compat_test)
 
 # ── headless 示例的三条 ───────────────────────────────────────────────────
 

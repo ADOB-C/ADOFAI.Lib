@@ -14,3 +14,10 @@ add_subdirectory(adofai/core)
 if(ADOFAI_LIB_ENABLE_AUDIO)
     add_subdirectory(adofai/audio)
 endif()
+
+# render（默认 OFF）：glad 必须在 render 之前 —— 后者 PUBLIC 依赖它。
+# 根 CMakeLists 已经把 GLFW / OpenGL 准备好了（只在 render=ON 时）。
+if(ADOFAI_LIB_ENABLE_RENDER)
+    add_subdirectory(adofai/glad)
+    add_subdirectory(adofai/render)
+endif()

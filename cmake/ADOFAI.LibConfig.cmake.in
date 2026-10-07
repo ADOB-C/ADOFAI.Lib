@@ -24,10 +24,14 @@ set(ADOFAI_LIB_BUNDLE_DEPS @ADOFAI_LIB_BUNDLE_DEPS@)
 #                 所以这里没法 find_dependency：消费者要自备（README 的"公共依赖"有写）。
 find_dependency(glm)
 
-# render=OFF（默认）时刻意不 find_package(OpenGL/glfw)：见 PLAN.md §5。
+# render=OFF（默认）时**刻意**不 find_package(OpenGL/glfw)：见 PLAN.md §5 —— 那条承诺要求
+# 默认配置真的不需要 GL。ON 时 render 的公共头带 GL 类型、且 glad 靠 glfwGetProcAddress
+# 解析入口，所以这两样必须找回来。
 if(ADOFAI_LIB_RENDER_ENABLED)
-    find_dependency(OpenGL)
     find_dependency(glfw3)
+    if(NOT WIN32 AND NOT APPLE)
+        find_dependency(OpenGL)
+    endif()
 endif()
 
 # 压缩库依赖。

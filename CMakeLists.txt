@@ -184,15 +184,37 @@ if(ADOFAI_LIB_AUDIO AND ADOFAI_LIB_AUDIO_DEVICE)
     FetchContent_MakeAvailable(miniaudio)
 endif()
 
+# ── render=ON 才需要的依赖（PLAN.md §5 的承诺：OFF 时这些一个都不该出现）────────
+# 门槛：**不 find_package(OpenGL/glfw)、不拉 GLFW**。所以这一段整块包在 if 里。
+if(ADOFAI_LIB_RENDER)
+    # glad（手写 GL 加载器）靠 glfwGetProcAddress 取函数指针 → 必须要 GLFW。
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL ON CACHE BOOL "" FORCE)     # 装进前缀，消费者的 find_dependency(glfw3) 才找得到
+    FetchContent_Declare(glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG 3.4
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(glfw)
+
+    # 平台 GL：Windows/macOS 由 render 直接链（见 src/adofai/render/CMakeLists.txt），
+    # Linux 需要 find OpenGL。
+    if(NOT WIN32 AND NOT APPLE)
+        find_package(OpenGL REQUIRED)
+    endif()
+endif()
+
 # ── Modules ──────────────────────────────────────────────────────────────────
 # archive 是**可选**模块（上游 2026-10 的依赖倒置）：core 只认 core/level/ByteSource.hpp
 # 那套接口，压缩能力由 archive 模块通过 adofai::archive::install() 注册进来。
 # ADOFAI_LIB_ARCHIVE=OFF 就是不编那个目录 —— 不需要任何桩，core 自己会给压缩谱明确报错。
 # audio 已搬（P4）：ADOFAI::audio = 合成/导出（纯逻辑）；ADOFAI::audio_device = 设备播放（默认 OFF）。
-# render(P5) 还没搬，选项先留着。
+# render 已搬（P5）：默认 OFF；ON 时引入 glad + GLFW + 平台 GL（见上）。
 set(ADOFAI_LIB_ENABLE_CORE ON)
 set(ADOFAI_LIB_ENABLE_ARCHIVE ${ADOFAI_LIB_ARCHIVE})
 set(ADOFAI_LIB_ENABLE_AUDIO ${ADOFAI_LIB_AUDIO})
+set(ADOFAI_LIB_ENABLE_RENDER ${ADOFAI_LIB_RENDER})
 
 add_subdirectory(src)
 
@@ -217,6 +239,12 @@ if(ADOFAI_LIB_INSTALL)
         if(ADOFAI_LIB_AUDIO_DEVICE)
             list(APPEND _adofai_install_targets adofai_audio_device)
         endif()
+    endif()
+    if(ADOFAI_LIB_ENABLE_RENDER)
+        # glad 也要装：render 的公共头里 include <glad/gl_core.hpp>，
+        # 而 adofai_render 是 PUBLIC 依赖 adofai_glad 的，导出集里必须有它。
+        # adofai_tile_reference **不装**（它只给测试当 A/B 基准）。
+        list(APPEND _adofai_install_targets adofai_glad adofai_render)
     endif()
     install(TARGETS ${_adofai_install_targets}
         EXPORT ADOFAILibTargets
@@ -245,6 +273,15 @@ if(ADOFAI_LIB_INSTALL)
                 DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/audio)
         endif()
     endif()
+    if(ADOFAI_LIB_ENABLE_RENDER)
+        # render 的公共头 + GL 加载器头（render 的公共头 include <glad/gl_core.hpp>）
+        install(DIRECTORY "${ADOFAI_LIB_SRC_ROOT}/render/"
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/render
+            FILES_MATCHING PATTERN "*.hpp")
+        install(DIRECTORY "${ADOFAI_LIB_SRC_ROOT}/glad/"
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/glad
+            FILES_MATCHING PATTERN "*.hpp")
+    endif()
 
     # 生成的版本头（#include <adofai/version.hpp>）
     install(FILES "${CMAKE_CURRENT_BINARY_DIR}/generated/adofai/version.hpp"
@@ -272,5 +309,5 @@ endif()
 
 message(STATUS "ADOFAI.Lib ${PROJECT_VERSION}: core=ON archive=${ADOFAI_LIB_ARCHIVE} "
                "audio=${ADOFAI_LIB_AUDIO} audio_device=${ADOFAI_LIB_AUDIO_DEVICE} "
-               "render=${ADOFAI_LIB_RENDER}(未搬) "
+               "render=${ADOFAI_LIB_RENDER} "
                "asset_zip=${ADOFAI_LIB_ASSET_ZIP} bundle_deps=${ADOFAI_LIB_BUNDLE_DEPS}")
