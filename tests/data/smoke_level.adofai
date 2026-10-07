@@ -1,0 +1,10 @@
+{
+  "settings": {
+    "version": 15,
+    "bpm": 120,
+    "offset": 0,
+    "trackColor": "debb7b",
+    "backgroundColor": "000000"
+  },
+  "angleData": [0, 0, 0, 90, 0, -90, 180, 0, 45, 0, 135, 0]
+}

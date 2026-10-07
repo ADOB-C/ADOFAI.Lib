@@ -1,0 +1,212 @@
+name: Build
+
+on:
+  push:
+    branches: [main, master]
+    paths-ignore:            # 纯文档不可能弄坏构建
+      - '**.md'
+      - 'PLAN.md'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# 同一分支连续推送时，旧的 run 已经没人看了 —— 直接取消
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 主力矩阵放在最便宜的平台上：ARCHIVE 与 BUNDLE_DEPS 的四种组合都在这里跑，
+  # 另外两平台只跑默认配置（平台性风险主要在编译/链接，不在选项组合）。
+  linux:
+    name: linux-${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: bundled            # 默认：内嵌 lzma/zstd（FetchContent）
+            archive: ON
+            bundle: ON
+            assetzip: ON
+          - name: no-archive         # PLAN.md §5：OFF 时不该需要压缩库，且前缀干净
+            archive: OFF
+            bundle: ON
+            assetzip: ON
+          - name: system-deps        # 用系统库（liblzma / libzstd 的 CMake config）
+            archive: ON
+            bundle: OFF
+            assetzip: ON
+          - name: no-asset-zip       # 资产 zip 真的可关（上游 dc89c14 加了条件编译）
+            archive: ON
+            bundle: ON
+            assetzip: OFF
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ runner.os }}-${{ matrix.name }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config \
+            liblzma-dev libzstd-dev
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DADOFAI_LIB_ARCHIVE=${{ matrix.archive }} \
+            -DADOFAI_LIB_BUNDLE_DEPS=${{ matrix.bundle }} \
+            -DADOFAI_LIB_ASSET_ZIP=${{ matrix.assetzip }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+      # 消费者验收（PLAN.md §6）：install 之后另建一个工程 find_package 编一遍。
+      # 只在默认配置这一格做，避免重复。
+      - name: Consumer smoke (install + find_package)
+        if: matrix.name == 'bundled'
+        run: |
+          ctest --test-dir build -R level_parse_parity --output-on-failure
+          cmake --install build --prefix "$RUNNER_TEMP/prefix"
+          mkdir -p consumer && cd consumer
+          # 消费者自备 RapidJSON（本库只 include 它的头，且它没有可用的 CMake config；
+          # 见 README 的"公共依赖"）。用本库构建时 Populate 下来的那份，省一次下载。
+          RAPIDJSON_INC="$GITHUB_WORKSPACE/build/_deps/rapidjson-src/include"
+          cat > CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(consumer LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 20)
+          find_package(ADOFAI.Lib CONFIG REQUIRED)
+          add_executable(app main.cpp)
+          target_link_libraries(app PRIVATE ADOFAI::archive)
+          if(TARGET ADOFAI::render)
+            message(FATAL_ERROR "render=OFF 却存在 ADOFAI::render")
+          endif()
+          EOF
+          cat > main.cpp <<'EOF'
+          #include <cstdio>
+          #include "archive/Install.hpp"
+          #include "core/level/LevelData.hpp"
+          #include "core/timeline/Timeline.hpp"
+          int main(int argc, char** argv) {
+              if (argc < 2) return 2;
+              adofai::archive::install();
+              adofai::LevelData level;
+              if (!level.loadFromFile(argv[1])) { std::fprintf(stderr, "load failed\n"); return 1; }
+              adofai::Timeline tl; tl.build(level, true);
+              std::printf("consumer ok: tiles=%zu\n", level.tiles.size());
+              return 0;
+          }
+          EOF
+          cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/prefix" \
+                -DCMAKE_CXX_FLAGS="-I$RAPIDJSON_INC"
+          cmake --build build --parallel
+          # 明文谱能读；顺便验 add_subdirectory 兜底路径
+          ./build/app "$GITHUB_WORKSPACE/tests/data/smoke_level.adofai"
+
+      - name: Consumer smoke (add_subdirectory)
+        if: matrix.name == 'bundled'
+        run: |
+          mkdir -p consumer-sub && cd consumer-sub
+          cat > CMakeLists.txt <<EOF
+          cmake_minimum_required(VERSION 3.20)
+          project(consumer_sub LANGUAGES CXX)
+          set(CMAKE_CXX_STANDARD 20)
+          add_subdirectory("$GITHUB_WORKSPACE" adofai_lib)
+          add_executable(app main.cpp)
+          target_link_libraries(app PRIVATE ADOFAI::core)
+          if(TARGET ADOFAI::render)
+            message(FATAL_ERROR "render=OFF 却存在 ADOFAI::render")
+          endif()
+          EOF
+          cat > main.cpp <<'EOF'
+          #include <cstdio>
+          #include "core/level/LevelData.hpp"
+          #include "core/timeline/Timeline.hpp"
+          int main(int argc, char** argv) {
+              if (argc < 2) return 2;
+              adofai::LevelData level;
+              if (!level.loadFromFile(argv[1])) { std::fprintf(stderr, "load failed\n"); return 1; }
+              adofai::Timeline tl; tl.build(level, true);
+              std::printf("consumer(subdir) ok: tiles=%zu\n", level.tiles.size());
+              return 0;
+          }
+          EOF
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ./build/app "$GITHUB_WORKSPACE/tests/data/smoke_level.adofai"
+
+  macOS:
+    name: macOS-default
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Install dependencies
+        run: brew install ninja
+
+      - name: Configure
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+      # 系统库那条路在 macOS 上也该能走通（brew 的 zstd 带 CMake config，
+      # liblzma 走 CMake 自带的 Find 模块）。
+      - name: Configure + build (system deps)
+        run: |
+          cmake -B build-sys -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DADOFAI_LIB_BUNDLE_DEPS=OFF
+          cmake --build build-sys --parallel
+          ctest --test-dir build-sys --output-on-failure
+
+  windows:
+    name: windows-default
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: mingw64
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            git
+
+      - name: Configure
+        shell: msys2 {0}
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: msys2 {0}
+        run: cmake --build build --parallel
+
+      - name: Tests
+        shell: msys2 {0}
+        run: ctest --test-dir build --output-on-failure
