@@ -570,47 +570,6 @@ Digest loadForcedParallel(const std::string& file) {
     return digest(lv, ok);
 }
 
-// 快路径必须吃下**非整数**的 action 字段（并带负向对照）。
-//
-// 为什么单独立一条：parseNumber 曾把"token 正好填满该值的跨度"误判成截断而返回 false，
-// 于是**所有含小数 action 字段的谱**整份退回旧路径 —— 而三路对拍测试永远绿，因为快路径一
-// 放弃，"快路径那次加载"跑的就是旧路径（上游 MYC 实测 4.60 s / 4.94 GB，快路径 1.39 s /
-// 1.47 GB）。所以必须显式断言"它没有回退"。
-//
-// 上游对应物是 scripts/check-fast-path.sh，但那个跑的是**本体 app**（build/adocao image），
-// 库里没有 app —— 这条是库等价版，直接盯 core 的 loadFromBuffer + ADOCAO_FAST_REQUIRE。
-std::string fastPathNonIntegerSelfTest() {
-    // 正向：bpmMultiplier 是小数，快路径必须吃下
-    const char* okText =
-        "{\"angleData\":[0,90,180],\"settings\":{\"bpm\":120},"
-        "\"actions\":[{\"floor\":1,\"eventType\":\"SetSpeed\",\"speedType\":\"Multiplier\","
-        "\"bpmMultiplier\":0.5}],\"decorations\":[]}";
-    setEnv("ADOCAO_FAST_REQUIRE", "1");
-    const Digest fast = loadBuffer(okText, std::strlen(okText));
-    unsetEnv("ADOCAO_FAST_REQUIRE");
-    if (!fast.ok) return "含小数 bpmMultiplier 的谱被快路径放弃了（应当吃下）";
-    if (fast.actionCount != 1) return "小数 action 解析后 action 条数不对";
-
-    // 同一份文本走旧路径，两边必须逐位一致
-    setEnv("ADOCAO_FORCE_DOM_PARSE", "1");
-    const Digest legacy = loadBuffer(okText, std::strlen(okText));
-    unsetEnv("ADOCAO_FORCE_DOM_PARSE");
-    if (const std::string d = diffSections(legacy, fast); !d.empty())
-        return "小数 action：快路径与旧路径不一致 → " + d;
-
-    // 负向对照：非整数 floor 本来就该让快路径放弃（旧路径 GetInt() 会 UB）。
-    // 它必须在 ADOCAO_FAST_REQUIRE 下**失败**，否则那个开关形同虚设、上面那条断言也就没意义。
-    const char* badText =
-        "{\"angleData\":[0,90,180],\"settings\":{\"bpm\":120},"
-        "\"actions\":[{\"floor\":1.5,\"eventType\":\"Twirl\"}],\"decorations\":[]}";
-    setEnv("ADOCAO_FAST_REQUIRE", "1");
-    const Digest bad = loadBuffer(badText, std::strlen(badText));
-    unsetEnv("ADOCAO_FAST_REQUIRE");
-    if (bad.ok) return "负向对照失败：非整数 floor 竟被快路径吃下（ADOCAO_FAST_REQUIRE 形同虚设？）";
-
-    return {};
-}
-
 std::vector<std::string> collect(int argc, char** argv) {
     std::vector<std::string> files;
     if (argc <= 1) return files;
@@ -671,12 +630,6 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("ok   窗口边界用例（284 KB 合成谱 / 4 KB 半窗，2000 个跨窗 action）\n");
-
-    if (const std::string e = fastPathNonIntegerSelfTest(); !e.empty()) {
-        std::printf("FAIL 快路径吃下非整数 action 字段: %s\n", e.c_str());
-        return 1;
-    }
-    std::printf("ok   快路径吃下非整数 action 字段（负向对照：非整数 floor 被拒）\n");
 
     if (const std::string e = streamSelfTest(); !e.empty()) {
         std::printf("FAIL 半窗流式解压自检: %s\n", e.c_str());

@@ -120,6 +120,12 @@ if(ADOFAI_LIB_ENABLE_ARCHIVE)
     add_test(NAME adocao_columns COMMAND adofai_columns_test)
 endif()
 
+# 快路径必须吃下非整数 action 字段（带负向对照）。上游同名的护栏跑本体 app，库里没有 app，
+# 所以这是**库自己的**等价版；它不放进 level_parse_test.cpp —— 那个是镜像文件，不许手改。
+add_executable(adofai_fast_path_test check_fast_path.cpp)
+target_link_libraries(adofai_fast_path_test PRIVATE ADOFAI::core)
+add_test(NAME fast_path_noninteger COMMAND adofai_fast_path_test)
+
 # ── headless 示例的三条 ───────────────────────────────────────────────────
 
 # 先按测试的方式把 WAV 生成出来（也保证例子在任何构建里被真的跑过一次）。

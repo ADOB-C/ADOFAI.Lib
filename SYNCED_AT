@@ -5,8 +5,8 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=0fea39a
-ADOCAO_COMMIT_FULL=0fea39a0f20675a2ab89252ea934aeb38addb08e
+ADOCAO_COMMIT=71cf1f2
+ADOCAO_COMMIT_FULL=71cf1f2c34758b894bd0f83215d098a3ad4d32ad
 ADOCAO_COMMIT_DATE=2026-10-07
 # 本次跨了一大段：上游加了 **`.adocao` 二进制容器（v2 列编码器）** ——
 #   archive/{AdocaoFormat.hpp,AdocaoColumns.{hpp,cpp},AdocaoWriter.{hpp,cpp},AdocaoReader.{hpp,cpp}}
