@@ -130,7 +130,10 @@ tests/level_fixtures/**  tests/charts/**  tests/gen_level_fixtures.py  tests/gen
 `TileMesh.hpp` 里有 `GLuint` 等），所以 render=ON 时 **glad 的头必须跟着一起装/导出**。
 
 > **进度**：P1 已完成（见下表）。下一步 P2 = 在**本目录**建库骨架，把 `core` 从 ADOCAO 拷过来。
-> 对齐起点用 ADOCAO 的 `dc89c14`（已 push、CI 三平台全绿；`SYNCED_AT` 就写它）。
+> 对齐起点用 ADOCAO 的 `918ef3b`（2026-10 **历史重写后**的新 sha，已 force-push、CI 三平台全绿；`SYNCED_AT` 就写它）。
+> ⚠️ ADOCAO 在 2026-10 重写过一次历史（把误提交的机器绝对路径清掉），**旧 sha 全部失效** ——
+> 如果你已经拷过 `tests/gen_render_fixtures.py` / `tests/capture_states.txt`，请从新 sha 重拷：
+> 旧版本里带着 `/Users/<用户名>/...` 的绝对路径（现在写成 `$ADOCAO_CHARTS` / `~/` 相对形式）。
 
 ## 6. 骨架、阶段、验收
 

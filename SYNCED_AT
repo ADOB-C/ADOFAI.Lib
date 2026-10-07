@@ -1,23 +1,30 @@
 # 镜像元数据（本库自己的文件，不镜像）
 
 # 这份源码镜像自哪个 ADOCAO commit。每周手动对齐时只改这一行（PLAN.md §3）。
-ADOCAO_COMMIT=dc89c14
-ADOCAO_COMMIT_FULL=dc89c144ceb5f2b8d0d1d34defffaf8c8a14ee91
+#
+# ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
+# 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
+# `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
+ADOCAO_COMMIT=7022ece
+ADOCAO_COMMIT_FULL=7022ece334e3bc95f7dc01e153f6ff97324435e7
 ADOCAO_COMMIT_DATE=2026-10-06
-SYNCED_BY=library-sync
+# 历史重写那笔（"去掉机器绝对路径：本地谱面改用 $ADOCAO_CHARTS/~ 相对形式"）=
+#   918ef3b / 918ef3bd0e911f8600354252054cfd904791843b
+# 本库镜像的 78 个文件与 918ef3b 逐字节一致，而 918ef3b..HEAD 对白名单区域没有任何改动
+# （只有归档/AGENTS.md/工具目录那几笔非镜像提交），所以两个 sha 在镜像内容上等价。
+#
+# 提交前自检（照 AGENTS.md 的新规则，应输出为空）：
+#   git grep -nE "/Users/[A-Za-z0-9._-]+/|/home/[A-Za-z0-9._-]+/" -- . ':!build'
+#
 # 对齐时 ADOCAO 的工作区是干净的（git status 为空），所以上面这个 commit 就是全部内容。
 #
-# 库侧 P4 追加镜像了 audio/（同一 commit，代码未变）：
+# 库侧 P4 追加镜像了 audio/：
 #   src/adofai/audio/{HitsoundManager.{hpp,cpp},AudioEngine.{hpp,cpp},stb_vorbis_impl.cpp}
 #
-# 相对上一次对齐（a1261c7）多了一笔：
-#   dc89c14  库那边提的两个补丁：archive 公共头 pimpl（头不再需要 lzma/zstd）+ 资产 zip 可关
-#   → 库侧随之打开两个开关：ADOFAI_LIB_ARCHIVE=OFF 与 ADOFAI_LIB_ASSET_ZIP=OFF 现在都真的可用，
-#     archive 的 lzma/zstd 也从 PUBLIC 降回 PRIVATE（公共头零三方依赖）。
-#
-# 更早（相对 9dd2e3c）跨了三笔提交：
-#   030f703  docs: P1 的命名空间/资产 API 规则写进文档  —— 纯文档，不在白名单里
-#   d86fd35  解耦：core 不再依赖 archive（依赖倒置）+ 修 P1 引入的音色路径回归
+# 更早的对齐（重写前，sha 已失效，仅作沿革记录）：
 #   a1261c7  修 Windows 编译：两个库 include 被插进了 #ifndef _WIN32 里
-# 布局随之变化：LevelArchive.* 从 core/level/ 挪到仓库根的 archive/；core 新增
-# level/ByteSource.{hpp,cpp}（接口）。库因此不再需要任何桩，见 MIRROR.md。
+#   dc89c14  库那边提的两个补丁：archive 公共头 pimpl（头不再需要 lzma/zstd）+ 资产 zip 可关
+#   d86fd35  解耦：core 不再依赖 archive（依赖倒置）
+#   → 库侧随之打开两个开关：ADOFAI_LIB_ARCHIVE=OFF 与 ADOFAI_LIB_ASSET_ZIP=OFF 都真的可用，
+#     archive 的 lzma/zstd 也从 PUBLIC 降回 PRIVATE（公共头零三方依赖）；
+#     布局上 LevelArchive.* 从 core/level/ 挪到仓库根的 archive/，core 新增 level/ByteSource.*。
