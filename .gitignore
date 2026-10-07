@@ -1,0 +1,15 @@
+# 构建产物
+build/
+build-*/
+out/
+install/
+_stage/
+
+# macOS
+.DS_Store
+
+# 编辑器 / 工具
+.vscode/
+.idea/
+compile_commands.json
+*.log

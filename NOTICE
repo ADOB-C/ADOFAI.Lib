@@ -1,0 +1,19 @@
+ADOFAI.Lib
+Copyright 2026 ADOCAO contributors
+
+本产品包含由 ADOCAO 项目（https://github.com/CHT-1192/ADOCAO）开发的软件。
+`src/adofai/**` 下的源码是 ADOCAO 的单向镜像（见 MIRROR.md / SYNCED_AT），
+按 Apache License 2.0 授权。
+
+--------------------------------------------------------------------------------
+第三方依赖（构建期经 FetchContent 获取，不随本仓库分发源码）
+--------------------------------------------------------------------------------
+
+  glm                  1.0.1        MIT License (Happy Bunny / G-Truc Creation)
+  RapidJSON            master       MIT License (Tencent)  —— 头文件，且会出现在公共头里
+  miniz                3.0.2        MIT License (Rich Geldreich et al.)  —— 仅 ADOFAI_LIB_ASSET_ZIP=ON 时
+  xz / liblzma         v5.6.3       0BSD / public domain (Tukaani Project)  —— 仅 ADOFAI_LIB_BUNDLE_DEPS=ON 时
+  zstd / libzstd       v1.5.6       BSD 3-Clause (Meta Platforms)  —— 仅 ADOFAI_LIB_BUNDLE_DEPS=ON 时
+
+ADOFAI_LIB_BUNDLE_DEPS=OFF 时，liblzma / libzstd 由消费方通过
+find_package(LibLZMA) / find_package(zstd) 提供，不在此列。

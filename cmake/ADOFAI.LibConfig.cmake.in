@@ -1,0 +1,71 @@
+@PACKAGE_INIT@
+
+# ADOFAI.Lib 的消费者入口。
+#
+#   find_package(ADOFAI.Lib CONFIG REQUIRED)
+#   target_link_libraries(app PRIVATE ADOFAI::core)
+#
+# 模块：ADOFAI::core，以及 ADOFAI_LIB_ARCHIVE=ON 时的 ADOFAI::archive
+# （音频 P4、渲染 P5 尚未搬过来）。
+
+include(CMakeFindDependencyMacro)
+
+# 这个选项在本库配置时就被 @ADOFAI_LIB_RENDER@ 替换成 ON/OFF —— 装出去的包记得住自己是
+# 怎么编的，消费者不用再猜。
+set(ADOFAI_LIB_RENDER_ENABLED @ADOFAI_LIB_RENDER@)
+set(ADOFAI_LIB_ARCHIVE_ENABLED @ADOFAI_LIB_ARCHIVE@)
+set(ADOFAI_LIB_BUNDLE_DEPS @ADOFAI_LIB_BUNDLE_DEPS@)
+
+# 公共依赖（出现在装出去的公共头里）：
+#   glm        —— PlaybackClock.hpp / PositionSolver.hpp 里的 glm::dvec2
+#   liblzma    —— ADOFAI_LIB_ARCHIVE=ON 时，LevelArchive.hpp 里的 <lzma.h> / lzma_stream
+#   zstd       —— 同上，<zstd.h> / ZSTD_DStream
+#   rapidjson  —— LevelData.hpp 里的 <rapidjson/document.h>，它没有可用的 CMake config，
+#                 所以这里没法 find_dependency：消费者要自备（README 的"公共依赖"有写）。
+find_dependency(glm)
+
+# render=OFF（默认）时刻意不 find_package(OpenGL/glfw)：见 PLAN.md §5。
+if(ADOFAI_LIB_RENDER_ENABLED)
+    find_dependency(OpenGL)
+    find_dependency(glfw3)
+endif()
+
+# 压缩库依赖。
+#
+# 事实（实测）：`ADOFAI::archive` 是个静态库，**静态库不传递依赖** —— `libadofai_archive.a`
+# 里只有解压的调用点，lzma/zstd 的代码在它们自己的 `.a` 里。所以消费者必须能拿到那两个库，
+# 现在走的是"依赖随我们装进前缀"这条路：
+#   * BUNDLE_DEPS=ON  → 内嵌的 lzma/zstd 也被装进前缀（带 config），这里 find 回来；
+#   * BUNDLE_DEPS=OFF → 用系统库，同样 find 回来。
+# 另一条路是把 lzma/zstd 的目标文件合并进我们自己的 .a（消费者就零压缩依赖了），
+# 但那要跨平台合库，见 MIRROR.md。
+if(ADOFAI_LIB_ARCHIVE_ENABLED)
+    find_dependency(LibLZMA)
+    find_dependency(zstd)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/ADOFAILibTargets.cmake")
+
+# 把压缩库接回 ADOFAI::archive 的消费接口。
+# 为什么必须显式接：ADOFAI::archive 里那条链接是 $<BUILD_INTERFACE:>（构建树 target 名
+# 不能进 install(EXPORT)），所以装出去的接口里它是空的。
+if(TARGET ADOFAI::archive)
+    if(TARGET LibLZMA::LibLZMA)
+        set_property(TARGET ADOFAI::archive APPEND PROPERTY
+            INTERFACE_LINK_LIBRARIES LibLZMA::LibLZMA)
+    endif()
+    foreach(_zstd_t zstd::libzstd_static zstd::libzstd_shared zstd::libzstd)
+        if(TARGET ${_zstd_t})
+            set_property(TARGET ADOFAI::archive APPEND PROPERTY
+                INTERFACE_LINK_LIBRARIES ${_zstd_t})
+            break()
+        endif()
+    endforeach()
+    unset(_zstd_t)
+endif()
+
+if(TARGET ADOFAI::core AND TARGET glm::glm)
+    set_property(TARGET ADOFAI::core APPEND PROPERTY INTERFACE_LINK_LIBRARIES glm::glm)
+endif()
+
+check_required_components(ADOFAI.Lib)

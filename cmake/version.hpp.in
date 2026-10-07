@@ -1,0 +1,14 @@
+#pragma once
+
+// ADOFAI.Lib 的版本。这个头由 CMake 生成到构建目录（cmake/version.hpp.in）。
+//
+// 两个版本号是不同的东西：
+//   * ADOFAI_LIB_VERSION       —— 库自己的版本（CMakeLists.txt 的 project(VERSION)）；
+//   * ADOFAI_LIB_ADOCAO_COMMIT —— 这份源码镜像自 ADOCAO 的哪个 commit（= 仓库根的 SYNCED_AT）。
+// 每次对齐只动后者，前者按语义化版本在发版时才动。
+
+#define ADOFAI_LIB_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define ADOFAI_LIB_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define ADOFAI_LIB_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define ADOFAI_LIB_VERSION "@PROJECT_VERSION@"
+#define ADOFAI_LIB_ADOCAO_COMMIT "@ADOFAI_LIB_ADOCAO_COMMIT@"
