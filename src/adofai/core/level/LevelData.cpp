@@ -37,6 +37,19 @@
 
 namespace adofai {
 
+// 快路径回退到旧路径时"在哪个阶段放弃"。以前这里是**静默**的：MYC 这种大谱一直在跑旧路径
+// （实测 4.6 s / ~4.4 GB，快路径是 ~0.7 s / ~1.6 GB），却没有任何测试或日志能看出来 ——
+// 与当年"窗口路径静默回退让测试全绿"是同一类坑。ADOCAO_FAST_REQUIRE=1 现在会把阶段名带出来。
+static const char* g_fastStage = "start";
+static const char* g_bufBase = nullptr;      // 文件缓冲区起点（把内部指针换算成文件偏移）
+static const char* g_failPos = nullptr;      // 放弃点（内部指针）
+static char g_fastStageBuf[96];
+// 带字节偏移的阶段名（偏移是相对缓冲区起点，即文件偏移，便于直接去看那一段字节）
+static void setFastStage(const char* what, long long off) {
+    std::snprintf(g_fastStageBuf, sizeof g_fastStageBuf, "%s@%lld", what, off);
+    g_fastStage = g_fastStageBuf;
+}
+
 static LevelData* g_internOwner = nullptr;
 
 namespace {
@@ -139,10 +152,41 @@ inline bool parseNumber(const char*& p, const char* e, double& out) {
     int digits = 0;
     while (p < e && *p >= '0' && *p <= '9') { v = v * 10 + (uint64_t)(*p - '0'); ++digits; ++p; }
     if (digits > 15 || (p < e && (*p == '.' || *p == 'e' || *p == 'E'))) {
+        // 先在 [start, e) 里把数字 token 界定出来，再转换 —— **不能**直接把 start 交给 strtod：
+        // strtod 要求 NUL 终止，而这里的缓冲区只保证到 e（流式窗口的半窗在 e 之后是上一窗的
+        // 残留字节；app 的 mmap 路径更糟：文件末尾不在 e 处终止，读过去可能直接 SIGSEGV）。
+        // 越界读会给出错值（实测 Unity.wav_rate 上 4 KB 半窗因此放弃窗口、回退整份解压）。
+        const char* q = start;
+        if (q < e && (*q == '-' || *q == '+')) ++q;
+        while (q < e && *q >= '0' && *q <= '9') ++q;
+        if (q < e && *q == '.') { ++q; while (q < e && *q >= '0' && *q <= '9') ++q; }
+        if (q < e && (*q == 'e' || *q == 'E')) {
+            const char* save = q;
+            ++q;
+            if (q < e && (*q == '+' || *q == '-')) ++q;
+            if (q < e && *q >= '0' && *q <= '9') { while (q < e && *q >= '0' && *q <= '9') ++q; }
+            else q = save;                      // 光秃秃的 e / e+ 之后没有数字：不算指数
+        }
+        // 注意：**不能**把"token 触到 e"当成截断。本函数的两个调用方（angleData 区间、action 字段）
+        // 传进来的 e 都是**该值/该区间的真实末尾**（来自 skipValue / 区域括号），所以一个
+        // "正好填满这个跨度"的完整 token 是正常的 —— 早期版本在这里返回 false，于是**所有非整数
+        // 的 action 字段**（bpmMultiplier/beatsPerMinute/angleOffset…）都会让整个文件放弃快路径
+        // （整数走上面的整数快路径，不经过这里，所以只有小数中招）。流式窗口那条路有它自己的
+        // 可续扫描器，不经过本函数。
+        if (q <= start) { p = start; return false; }
+        // 到这里 [start, q) 是完整 token，复制到本地缓冲再 NUL 终止后转换
+        // （仍然走 strtod，保证与旧路径 parseAngleDataFast 逐位同值）。
+        char buf[128];
+        const size_t n = (size_t)(q - start);
+        std::string heap;
+        char* dst = buf;
+        if (n + 1 > sizeof buf) { heap.assign(start, q); dst = &heap[0]; }
+        else std::memcpy(buf, start, n);
+        dst[n] = '\0';
         char* endp = nullptr;
-        double d = std::strtod(start, &endp);
-        if (endp == start) { p = start; return false; }
-        p = endp;
+        double d = std::strtod(dst, &endp);
+        if (endp != dst + n) { p = start; return false; }   // 没有整段消费掉：交给上层回退
+        p = q;
         out = d;
         return true;
     }
@@ -190,6 +234,7 @@ inline bool scanRootMembers(const char* s, const char* e, Regions& r,
     if (p >= e || *p != '{') return false;
     for (++p;;) {
         p = skipWs(p, e);
+        setFastStage("scanRootMembers/member", (long long)(p - s));   // 放弃时看这里
         if (p >= e) return false;
         if (*p == '}') return true;
         if (*p == ',') { ++p; continue; }        // 前置/重复/尾随逗号
@@ -202,12 +247,14 @@ inline bool scanRootMembers(const char* s, const char* e, Regions& r,
         p = skipWs(p + 1, e);
         if (*p == '[' && keyIs(key, "actions") && !r.actions) {
             const char* aEnd = nullptr;
+            setFastStage("scanRootMembers/actions", (long long)(p - s));
             if (!parseActionRegionParallel(p, e, actionsOut, &aEnd)) return false;
             r.actions = p;
             r.actionsEnd = aEnd;
             p = aEnd;
             continue;
         }
+        setFastStage("scanRootMembers/value", (long long)(p - s));
         const char* vEnd = skipValue(p, e);
         if (!vEnd) return false;
         // 重复键取第一个（RapidJSON 的 FindMember 也是第一个）
@@ -446,9 +493,11 @@ inline bool parseActionRegion(const char* b, const char* end,
         const char* objEnd = skipContainer(p, end);
         if (!objEnd) return false;
         ActionFields f;
+        g_failPos = p;
         if (!parseActionObject(p + 1, objEnd, f)) return false;
         LevelData::FastAction a;
         bool keep = false;
+        g_failPos = p;
         if (!buildAction(f, a, keep)) return false;
         if (keep) out.push_back(std::move(a));
         p = objEnd;
@@ -1003,6 +1052,17 @@ bool LevelData::loadFromBuffer(const char* data, size_t len, ProgressCb onProgre
     // 解压后的缓冲区必须活到解析结束，所以放在这个作用域里。
     std::string decompressed;
     const LevelArchiveKind archive = sniffLevelArchive(data, len);
+    if (archive == LevelArchiveKind::Adocao) {
+        // 自研二进制容器：**明确失败，绝不静默回退**（这和压缩容器的"搞不定就退回整份解压"
+        // 是两种态度 —— 那里的回退不改变语义，这里回退意味着把一个坏文件当好文件读了）。
+        const ArchiveBackend& bk = archiveBackend();
+        std::string why;
+        if (!bk.decodeAdocao || !bk.decodeAdocao(data, len, *this, why)) {
+            LOG_E("adocao 解码失败: %s", why.empty() ? "archive 后端未注册（缺 install()）" : why.c_str());
+            return false;
+        }
+        return finishLoad(onProgress, exportOnly);      // 与两条 JSON 路径共用同一段收尾
+    }
     if (archive != LevelArchiveKind::Plain) {
         // 优先走窗口流水线：不把整份解压结果摊进内存（10 GB 文本那份匿名内存会被系统
         // 压缩/换页，实测吞吐掉到 1/11）。任何搞不定的情况都退回下面的整份解压。
@@ -1102,9 +1162,12 @@ bool LevelData::loadFromBuffer(const char* data, size_t len, ProgressCb onProgre
             // 测试用：要求快路径必须能吃下这个文件（不许静默回退到 DOM），用来界定
             // "窗口路径也必须能吃下"的范围。
             if (std::getenv("ADOCAO_FAST_REQUIRE") != nullptr) {
-                LOG_E("fast parse declined the buffer (test hook ADOCAO_FAST_REQUIRE)");
+                LOG_E("fast parse declined the buffer (test hook ADOCAO_FAST_REQUIRE); stage=%s", g_fastStage);
+                std::fprintf(stderr, "[ADOCAO] fast parse declined at stage: %s off=%lld\n", g_fastStage,
+                             (g_failPos && g_bufBase) ? (long long)(g_failPos - g_bufBase) : -1LL);
                 return false;
             }
+            LOG_D("fast parse declined at stage: %s (falling back to legacy)", g_fastStage);
         }
         if (onProgress) onProgress(0.10f, "Parsing angleData...");
         std::string content(data, len);
@@ -1117,18 +1180,54 @@ bool LevelData::loadFromBuffer(const char* data, size_t len, ProgressCb onProgre
 
 // 快路径：mmap 出来的原文直接扫。任何一步复现不了 cleanJson 的语义就返回 false，
 // 此时 this 还没有被改动过，调用方会走旧路径。
+// 采样估计 angleData 的元素个数：在整段上均匀取若干窗口，数每个窗口里的逗号，
+// 按窗口密度外推到整段，**取最大的那个估计**，再加余量。
+//
+// 为什么不能再用固定常数：实测同一批谱面的每元素字节数相差 4 倍（The Moon 3.53、
+// angles360 5.76、MYC 13.39），旧的 /3 于是预留 1.18~4.46 倍，MYC 一个谱就白占 187 MB。
+// 为什么估计要偏大：低估会触发 vector 的倍增，那一刻新旧缓冲同时在 —— 峰值翻倍，
+// 比多留十几个百分点糟得多。所以取最大窗口估计 + 1/8 余量（实测各谱面都落在 1.1x 上下，
+// 既不再有 4 倍浪费，也不会重新分配）。
+// 每窗口 32 KB、最多 8 个 → 扫描量与谱面大小无关（总共 256 KB 上限，微秒级）。
+static size_t estimateAngleCount(const char* p, size_t span) {
+    if (span == 0) return 0;
+    const size_t kW = 32u << 10;
+    const int    kMaxWin = 8;
+    size_t best = 0;
+    for (int w = 0; w < kMaxWin; ++w) {
+        // 均匀铺开：窗口中心按 (w+0.5)/kMaxWin 落在整段上
+        const size_t center = (size_t)((double)span * ((double)w + 0.5) / (double)kMaxWin);
+        const size_t off = center > kW / 2 ? center - kW / 2 : 0;
+        const size_t n = (span - off < kW) ? (span - off) : kW;
+        if (n < 16) continue;
+        size_t commas = 0;
+        for (size_t i = 0; i < n; ++i) if (p[off + i] == ',') ++commas;
+        if (commas == 0) continue;
+        // 把窗口密度外推到整段（先乘后除，避免整数截断丢精度）
+        const size_t est = (size_t)((double)commas * (double)span / (double)n) + 1;
+        if (est > best) best = est;
+    }
+    if (best == 0) return span / 3;        // 退化（一个逗号都没采到）：退回旧启发式
+    return best + best / 8 + 16;           // +12.5% 余量，确保不触发倍增
+}
+
 bool LevelData::tryFastParse(const char* data, size_t len, ProgressCb onProgress) {
     if (onProgress) onProgress(0.10f, "Parsing angleData...");
+    g_bufBase = data;
+    g_failPos = nullptr;
     std::vector<FastAction> newActions;   // actions 在根扫描里就地解析
     Regions r;
+    g_fastStage = "scanRootMembers";
     if (!scanRootMembers(data, data + len, r, newActions)) return false;
 
     if (onProgress) onProgress(0.12f, "Parsing JSON...");
 
     std::vector<double> newAngles;
     if (r.angle) {
-        // angleData 只有几十 MB，加上整数快路径后 6.77 M 个值只要 ~25 ms
-        newAngles.reserve((size_t)(r.angleEnd - r.angle) / 3);
+        // angleData 只有几十 MB，加上整数快路径后 6.77 M 个值只要 ~25 ms。
+        // 预留量按采样估出来的每元素字节数算（见 estimateAngleCount），不要用固定常数。
+        newAngles.reserve(estimateAngleCount(r.angle, (size_t)(r.angleEnd - r.angle)));
+        g_fastStage = "angleData";
         if (!parseAngleDataRegion(r.angle, r.angleEnd, newAngles)) return false;
     }
 
@@ -1139,11 +1238,13 @@ bool LevelData::tryFastParse(const char* data, size_t len, ProgressCb onProgress
         std::string sub = cleanJson(std::string(r.settings, (size_t)(r.settingsEnd - r.settings)));
         rapidjson::Document s;
         s.Parse<rapidjson::kParseTrailingCommasFlag>(sub.c_str());
+        g_fastStage = "settings";
         if (s.HasParseError() || !s.IsObject()) return false;
         readSettings(s, newSettings);
     }
     if (r.path && r.pathEnd > r.path + 1) {
         // 旧路径用 GetString()（会解转义），带反斜杠就交回旧路径；裸 CR 则照 cleanJson 删掉
+        g_fastStage = "pathData(escape)";
         if (std::memchr(r.path, '\\', (size_t)(r.pathEnd - r.path))) return false;
         newPath.assign(r.path + 1, (size_t)(r.pathEnd - r.path - 1));
         newPath.erase(std::remove(newPath.begin(), newPath.end(), '\r'), newPath.end());
@@ -1316,6 +1417,11 @@ void LevelData::calculateTilePositions() {
         }
     }
 
+    // 先 reserve(n+1) 再 resize(n)：末尾还要 push_back 第 n+1 块"extra"砖（见函数末），
+    // 若直接 resize(n) 再 push_back，libc++ 会按 2× 增长 → 容量永久停在 2n，
+    // 于是每层常驻是 48 B 而不是 24 B（实测三张谱全部 cap = 2n：1e8 层白扔 2.4 GB，
+    // 2^31-1 层 51 GB。见 docs/scale-1e8-to-2e9.md §7）。
+    tiles.reserve((size_t)n + 1);
     tiles.resize(n);
     double curX = 0.0, curY = 0.0;  // double for precision
 
@@ -1396,10 +1502,21 @@ void LevelData::processActions() {
     bookmarkFloors.clear();
 
     struct SS { float multiplier = 0.0f; float bpm = 0.0f; bool isMultiplier = false; };
-    std::vector<SS> setSpeedByFloor(n);
+    // 按需分配：没有任何 SetSpeed 事件时这 n x 12 B 是白占的（实测 25 万层的无害谱上，
+    // 峰值快照里就有一块 250001 x 12 = 3,000,012 B 的分配）。1e8 层就是 1.2 GB。
+    // 空 vector 与原来逐位等价：默认构造的 SS 全 false/0，下面那个逐层循环体什么都不做。
+    std::vector<SS> setSpeedByFloor;
 
-    struct HSChange { int floor; std::string type; float volume; };
+    // 每个 SetHitsound 事件一条。原来存 std::string（40 B/条），改成存驻留 id：12 B/条，
+    // 而 2^31 层 × 0.9 事件/层时这是 72 GB → 18 GB 的差别（见 docs/scale-1e8-to-2e9.md §13）。
+    // strId == 0 表示空串（= 用 settings.hitsound），与 FastAction::strId 的约定一致。
+    struct HSChange { int floor; float volume; uint16_t strId; };
+    static_assert(sizeof(HSChange) == 12, "HSChange 必须保持 12 B（大谱的事件数是十亿级）");
     std::vector<HSChange> hsChanges;
+
+    // settings.hitsound 的驻留 id：一次求得。原来逐层比较的是两个 std::string（1e9 层就是
+    // 10 亿次字符串比较），现在只是一次整数比较。
+    const uint16_t settingsHitsoundId = internActionStr(settings.hitsound);
 
     for (auto& a : actions) {
         int floor = a.floor;
@@ -1409,17 +1526,20 @@ void LevelData::processActions() {
             tileHasTwirl[floor] = true; break;
         case FastAction::SetSpeed:
             tileHasSetSpeed[floor] = true;
+            if (setSpeedByFloor.empty()) setSpeedByFloor.resize((size_t)n);   // 第一次遇到才分配
             { SS& ev = setSpeedByFloor[floor]; ev.isMultiplier = a.flag;
               if (a.flag) ev.multiplier = a.val1; else ev.bpm = a.val1; }
             break;
         case FastAction::PositionTrack:
             tilePositionOffsets[floor] = {a.val1, a.val2, a.flag}; break;
         case FastAction::SetHitsound:
-            hsChanges.push_back({floor, actionStr(a).empty() ? settings.hitsound : actionStr(a),
-                                 a.flag ? a.val1 : settings.hitsoundVolume}); break;
+            // strId == 0 就是空串（= 用 settings.hitsound），与上面 push 的 type 语义逐字一致。
+            hsChanges.push_back({floor, a.flag ? a.val1 : settings.hitsoundVolume,
+                                 a.strId ? a.strId : settingsHitsoundId}); break;
         case FastAction::Bookmark:
             bookmarkFloors.push_back(floor); break;
         case FastAction::AnimateTrack:
+            hasAtStates = true;
             atStates[floor] = {actionStr(a).empty() ? settings.trackDisappearAnimation : actionStr(a),
                                settings.trackAnimation, // aa not parsed yet; use global
                                a.val1 >= 0 ? a.val1 : settings.beatsBehind,
@@ -1431,21 +1551,25 @@ void LevelData::processActions() {
     }
 
     float runningBPM = settings.bpm;
-    for (int i = 0; i < n; i++) {
-        if (setSpeedByFloor[i].isMultiplier) runningBPM *= setSpeedByFloor[i].multiplier;
-        else if (setSpeedByFloor[i].bpm > 0.0f) runningBPM = setSpeedByFloor[i].bpm;
-        tileBPMs[i] = runningBPM;
+    // 空 = 本谱一条 SetSpeed 都没有：tileBPMs 上面已经 assign 成全 settings.bpm，
+    // 而原循环在这种情况下本来就只写回 settings.bpm —— 所以整段跳过是逐位等价的。
+    if (!setSpeedByFloor.empty()) {
+        for (int i = 0; i < n; i++) {
+            if (setSpeedByFloor[i].isMultiplier) runningBPM *= setSpeedByFloor[i].multiplier;
+            else if (setSpeedByFloor[i].bpm > 0.0f) runningBPM = setSpeedByFloor[i].bpm;
+            tileBPMs[i] = runningBPM;
+        }
     }
 
     if (!hsChanges.empty()) {
-        std::string curHS = settings.hitsound;
+        uint16_t curId = settingsHitsoundId;      // 驻留 id 取代原来的 std::string curHS
         float curVol = settings.hitsoundVolume;
         size_t ci = 0;
         for (int i = 0; i < n; i++) {
             while (ci < hsChanges.size() && hsChanges[ci].floor <= i) {
-                curHS = hsChanges[ci].type; curVol = hsChanges[ci].volume; ci++;
+                curId = hsChanges[ci].strId; curVol = hsChanges[ci].volume; ci++;
             }
-            if (curHS != settings.hitsound) tileHitsounds[i] = curHS;
+            if (curId != settingsHitsoundId) tileHitsounds[i] = actionStrTable[curId];
             if (curVol != settings.hitsoundVolume) {
                 if (tileHitsoundVolumes.size() != (size_t)n)
                     tileHitsoundVolumes.assign((size_t)n, std::numeric_limits<float>::quiet_NaN());
@@ -1492,6 +1616,10 @@ void LevelData::releaseMemory() {
     tilePositionOffsets.clear();
     tileHitsounds.clear();
     tileHitsoundVolumes.clear(); tileHitsoundVolumes.shrink_to_fit();
+    // atStates 只有 Timeline::build() 用（它在本函数之前就跑完了），运行时只靠 hasAtStates 判定，
+    // 所以实体可以释放：每条 101 B（两个 std::string + 2 float + bool），AnimateTrack 密集的谱上很可观。
+    atStates.clear();
+    std::unordered_map<int, ATState>().swap(atStates);
     std::string().swap(pathData);
     // angleData kept: needed by TileMesh::build() for midspin detection
     // tileBPMs kept: needed by buildIcons() for SetSpeed icon coloring

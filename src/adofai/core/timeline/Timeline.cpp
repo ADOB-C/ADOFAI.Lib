@@ -35,8 +35,6 @@ static void precalcTileRange(
     std::vector<float>& outStartAngles,
     std::vector<float>& outTotalAngles,
     std::vector<float>& outDurations,
-    std::vector<float>& outStartDist,
-    std::vector<float>& outEndDist,
     int start, int end, int n)
 {
     const auto& tiles = level.tiles;
@@ -82,9 +80,6 @@ static void precalcTileRange(
         float rotationAmount = std::abs(totalAngle) / (2.0f * 3.14159265f);
         float duration = rotationAmount * 2.0f * (60.0f / currentBPM);
         outDurations[i] = duration;
-
-        outStartDist[i] = 1.0f;
-        outEndDist[i]   = 1.0f;
     }
 }
 
@@ -102,8 +97,9 @@ void Timeline::precalculateTiming() {
     m_tileStartAngles.resize(n);
     m_tileBPM.resize(n);
     m_tileIsCW.resize(n);
-    m_tileStartDist.resize(n);
-    m_tileEndDist.resize(n);
+    // 每层距离只在最后一层可能是真值，其余恒 1.0f —— 所以只记层数 + 两个标量（见 Timeline.hpp）。
+    // 原先是两条 vector<float>：8 B/层，2^31 层就是 17 GB。
+    m_distCount = (size_t)n;
 
     // Phase 0: Build sorted flat action index (O(m) space instead of O(n))
     std::vector<std::pair<int, size_t>> flatActions;
@@ -161,23 +157,17 @@ void Timeline::precalculateTiming() {
     m_tileIsCW[n - 1] = isCW;
     m_tileBPM[n - 1] = currentBPM;
 
-    // Phase 2: Per-tile durations
+    // Phase 2: Per-tile angles/durations.
+    // 导出模式**也要真实角度**：PositionSolver::positionAtTile 用 startAngles/totalAngles 算行星的
+    // 轨道位置（mv = pivot + (cos,sin)(start + total*progress) * dist），而 MapExport 的矢量 image
+    // 与 --1px 两条路、以及 core/map/LevelMap 都在调它。原来这里把两个角度清零，于是导出图画出的
+    // 不是游戏那条曲线（实测 angles360 1024²：32.79% 的墨点位置不同、墨点多 25%，呈"串珠"状）。
+    // 现在两条路共用 precalcTileRange，导出模式的角度与渲染路径逐位相同。
     if (m_exportOnly) {
-        for (int i = 0; i < n - 1; i++) {
-            double rawAng = (i < (int)angleData.size()) ? angleData[i] : 180.0;
-            double relAngle;
-            if (rawAng == 999.0) { relAngle = 0.0; } else {
-                double delta = std::fmod((double)preAngleDir[i] - rawAng, 360.0);
-                if (delta < 0) delta += 360.0;
-                if (!m_tileIsCW[i]) relAngle = (delta < 0.0001) ? 360.0 : 360.0 - delta;
-                else relAngle = (delta < 0.0001) ? 360.0 : delta;
-            }
-            double rot = relAngle / 360.0 + (double)preExtraRot[i];
-            m_tileDurations[i] = (float)(rot * 2.0 * (60.0 / m_tileBPM[i]));
-            m_tileStartAngles[i] = 0.0f; m_tileTotalAngles[i] = 0.0f;
-            m_tileStartDist[i] = 1.0f; m_tileEndDist[i] = 1.0f;
-        }
-        m_tileDurations[n - 1] = 0.1f;
+        precalcTileRange(*m_level, m_tileIsCW, m_tileBPM, preAngleDir, preExtraRot,
+                         m_tileStartAngles, m_tileTotalAngles, m_tileDurations,
+                         0, n - 1, n);
+        m_tileDurations[n - 1] = 0.1f;      // 导出模式的末层时长（原行为，保持不变）
     } else {
         constexpr int PARALLEL_THRESHOLD = 256;
         int workItems = n - 1;
@@ -197,14 +187,14 @@ void Timeline::precalculateTiming() {
                     std::cref(m_tileIsCW), std::cref(m_tileBPM),
                     std::cref(preAngleDir), std::cref(preExtraRot),
                     std::ref(m_tileStartAngles), std::ref(m_tileTotalAngles),
-                    std::ref(m_tileDurations), std::ref(m_tileStartDist), std::ref(m_tileEndDist),
+                    std::ref(m_tileDurations),
                     (int)s, (int)e, n));
             }
             for (auto& f : futures) f.wait();
         } else {
             precalcTileRange(*m_level, m_tileIsCW, m_tileBPM, preAngleDir, preExtraRot,
                              m_tileStartAngles, m_tileTotalAngles,
-                             m_tileDurations, m_tileStartDist, m_tileEndDist,
+                             m_tileDurations,
                              0, workItems, n);
         }
     }
@@ -248,9 +238,9 @@ void Timeline::precalculateTiming() {
                 const auto& pp = tiles[lastIdx - 1].position;
                 float dx = (float)(p[0] - pp[0]), dy = (float)(p[1] - pp[1]);
                 float d = std::sqrt(dx * dx + dy * dy);
-                m_tileStartDist[lastIdx] = d > 0.01f ? d : 1.0f;
+                m_lastStartDist = d > 0.01f ? d : 1.0f;
             }
-            m_tileEndDist[lastIdx] = m_tileStartDist[lastIdx];
+            m_lastEndDist = m_lastStartDist;
         }
     }
 
@@ -263,7 +253,7 @@ void Timeline::precalculateTiming() {
     // 现在留空，判定同样是 disabled。判据一旦改动，两处必须一起改。
     const bool needsTrackVis = (m_level->settings.trackDisappearAnimation != "None" ||
                                m_level->settings.trackAnimation != "None" ||
-                               !m_level->atStates.empty());
+                               m_level->hasAtStates);
     if (needsTrackVis)
     {
         m_tileDisappearTimes.assign(n, std::numeric_limits<double>::infinity());

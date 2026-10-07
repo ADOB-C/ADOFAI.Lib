@@ -38,6 +38,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include "archive/AdocaoWriter.hpp"   // .adocao 往返（pack）+ 可复现性
 
 
 
@@ -292,6 +293,11 @@ std::string levelPathResolveSelfTest() {
     std::ofstream(root / "many" / "a.adofai").put('x');
     std::ofstream(root / "many" / "b.adofai.xz").put('x');
     std::ofstream(root / "nested" / "chart" / "c.adofai.zst").put('x');
+    std::ofstream(root / "bin.adocao").put('x');                       // .adocao 也是谱
+    fs::create_directories(root / "solo", ec);
+    std::ofstream(root / "solo" / "d.adocao").put('x');
+    std::ofstream(root / "amb.adofai").put('x');                       // 补全有歧义：两个都命中
+    std::ofstream(root / "amb.adocao").put('x');
     struct Case { fs::path in; fs::path want; const char* what; };
     const Case cases[] = {
         { root / "plain.adofai", root / "plain.adofai",                      "文件原样返回" },
@@ -299,6 +305,9 @@ std::string levelPathResolveSelfTest() {
         { root / "nested",       root / "nested" / "chart" / "c.adofai.zst", "往下看一层子目录" },
         { root / "many",         root / "many",                              "多个命中不猜" },
         { root / "missing",      root / "missing",                           "不存在原样返回" },
+        { root / "bin",          root / "bin.adocao",                        "落下 .adocao 后缀时补全" },
+        { root / "solo",         root / "solo" / "d.adocao",                 "目录里唯一的 .adocao" },
+        { root / "amb",          root / "amb",                               "补全有歧义时不猜" },
     };
     for (const auto& c : cases) {
         const std::string got = resolveLevelPath(c.in.string());
@@ -378,7 +387,7 @@ std::string trackVisAllocationSelfTest() {
             // 逐字复制 app/LevelScene.cpp 的 m_tileVisEnabled
             const bool consumerEnabled = (lv.settings.trackDisappearAnimation != "None" ||
                                           lv.settings.trackAnimation != "None" ||
-                                          !lv.atStates.empty());
+                                          lv.hasAtStates);
             if (allocated != consumerEnabled) {
                 char buf[224];
                 std::snprintf(buf, sizeof buf,
@@ -496,6 +505,35 @@ std::string archiveRoundTrip(const std::string& file, const Digest& plain) {
         // 截断的 xz 必须干净地失败，而不是崩
         if (loadBuffer(packed.data(), packed.size() / 2).ok) return "截断的 xz 竟然加载成功";
     }
+    // `.adocao`（自研二进制容器）：打包 → 走**完整的** loadFromBuffer（含 magic 分派与 finishLoad）
+    // → 与明文逐位比对；再验可复现性（同一输入两次 pack 必须逐字节相同）与两个负向对照
+    // （改坏 settings 载荷 / 截断，都必须干净失败）。
+    {
+        LevelData src;
+        if (src.loadFromBuffer(raw.data(), raw.size())) {
+            std::vector<uint8_t> a;
+            std::vector<uint8_t> b;
+            std::string err;
+            if (!adocao::packLevel(src, a, err)) return "adocao pack 失败: " + err;
+            if (!adocao::packLevel(src, b, err, nullptr)) return "adocao 第二次 pack 失败: " + err;
+            if (a != b) return "adocao pack 不可复现（同一输入两次字节不同）";
+            const std::string d = diffSections(plain, loadBuffer((const char*)a.data(), a.size()));
+            if (!d.empty()) return "adocao 往返: " + d;
+            if (loadBuffer((const char*)a.data(), a.size() / 2).ok) return "截断的 .adocao 竟然加载成功";
+            // 改坏第一段（settings）载荷的第一个字节：段 crc32c 必须抓住它
+            if (a.size() > 80) {
+                const uint16_t nsec = (uint16_t)(a[8] | ((uint16_t)a[9] << 8));
+                size_t pay = (76 + (size_t)nsec * 40 + 7u) & ~(size_t)7;
+                if (pay < a.size()) {
+                    std::vector<uint8_t> bad = a;
+                    bad[pay] ^= 0xFF;
+                    if (loadBuffer((const char*)bad.data(), bad.size()).ok)
+                        return "被改坏的 .adocao 竟然加载成功（段 crc32c 没起作用）";
+                }
+            }
+        }
+    }
+
     if (compressZstd(raw, packed)) {
         if (windowedCopy(packed, LevelArchiveKind::Zstd, 1) != raw) return "zstd 半窗流式解压与整份不一致";
         if (fastHandles) setEnv("ADOCAO_WINDOW_REQUIRE", "1");   // 快路径能吃下 -> 窗口也必须能
@@ -579,6 +617,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("ok   音量语义断言（负/零音量原样保留，两条路径都查）\n");
+
 
     if (const std::string e = windowHugeValueSelfTest(); !e.empty()) {
         std::printf("FAIL 超大单值跨窗用例: %s\n", e.c_str());

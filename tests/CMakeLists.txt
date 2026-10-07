@@ -112,6 +112,14 @@ add_executable(adofai_lzma_mt_compat_test lzma_mt_compat_test.cpp)
 target_include_directories(adofai_lzma_mt_compat_test PRIVATE "${ADOFAI_LIB_SRC_ROOT}")
 add_test(NAME lzma_mt_compat COMMAND adofai_lzma_mt_compat_test)
 
+# `.adocao` 列编码器自测：逐位往返 + 编码选择（字典/常量/差分/位打包）+ **坏数据必须干净失败**
+# （截断、count 说谎、未知 codec、越界下标）。只链 archive —— 列编码器本身不用压缩库。
+if(ADOFAI_LIB_ENABLE_ARCHIVE)
+    add_executable(adofai_columns_test adocao_columns_test.cpp)
+    target_link_libraries(adofai_columns_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_columns COMMAND adofai_columns_test)
+endif()
+
 # ── headless 示例的三条 ───────────────────────────────────────────────────
 
 # 先按测试的方式把 WAV 生成出来（也保证例子在任何构建里被真的跑过一次）。

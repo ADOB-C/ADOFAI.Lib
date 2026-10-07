@@ -16,7 +16,10 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 
 ## Features
 
-- **解析** `.adofai`：明文，以及 `.adofai.xz` / `.adofai.zst` 容器（按 magic 识别，不看扩展名）
+- **解析** `.adofai`：明文，`.adofai.xz` / `.adofai.zst` 压缩容器，以及本项目的
+  **`.adocao` 二进制容器**（列式编码：每列按取值基数选字典/常量/差分/位打包，段级可选 zstd；
+  实测把 19.58 MB 的谱压到 6 KB 级 —— 逐位无损、坏数据响亮失败，格式见上游 `docs/adocao-format.md`）
+- 容器一律按 **magic** 识别，不看扩展名（改过名/抹掉扩展名照样能读）
 - **时间线**：逐层起始时刻、时长、BPM 传播、中旋砖（`angleData = 999`）、SetSpeed/Twirl
 - **位置解算**：任意时刻的双星位置，与游戏里同一套解算
 - **打拍音**：合成 / 混音 / WAV 导出（忠实度对齐 `HitSoundGenerator`）

@@ -1,14 +1,31 @@
-# ADOFAI::archive —— .adofai.xz / .adofai.zst 的解压实现（4 MB 滑窗流式 + 整份解压）。
+# ADOFAI::archive —— 谱面容器：`.adofai.xz` / `.adofai.zst` 解压（4 MB 滑窗流式 + 整份解压），
+# 以及 `.adocao` 二进制容器（列编码器 + 读写方）。
 #
 # 依赖倒置：core/level/ByteSource.hpp 定义接口与容器识别，本模块实现解压并在
 # adofai::archive::install() 里把后端注册给 core。所以本 target 是**可选**的：
-#   * 不链它 → 明文照常，压缩容器给出明确错误（那是 core 自己的行为，不需要任何桩）；
-#   * 链它并在启动时调一次 install() → 压缩容器可用。
+#   * 不链它 → 明文照常，容器给出明确错误（那是 core 自己的行为，不需要任何桩）；
+#   * 链它并在启动时调一次 install() → 容器可用。
 #
 # 镜像路径：上游在仓库根的 archive/（ADOCAO 的 app/ 也这么引），所以这里就是
 # src/adofai/archive/ —— 与 ADOCAO 逐字一致，已经不再有"唯一一处路径不一致"。
 add_library(adofai_archive STATIC
-    LevelArchive.cpp)
+    LevelArchive.cpp
+    # `.adocao` 的列编码器（字典/常量/差分/位打包/原始）。**不依赖** lzma/zstd：
+    # 压缩只是列流之后的可选一步，设计核心是"每列按取值基数选编码"。
+    AdocaoColumns.cpp
+    # `.adocao` 写入方（pack）：依赖 core 的 LevelData（archive → core 是允许的方向）
+    AdocaoWriter.cpp
+    # `.adocao` 读取方（unpack）：填 LevelData 但不做收尾（收尾与两条 JSON 路径共用）
+    AdocaoReader.cpp)
+
+# 写入方会把"生成这份文件的源码来自哪个 commit"写进文件头做溯源（读取方根本不看它，
+# 它只作排查/可复现断言）。上游那边取的是 `git rev-parse HEAD`，但**库这边的 HEAD 是库自己的
+# 提交**，而这个字段要回答的是"哪份上游源码生成了它" —— 所以用 SYNCED_AT 里的上游 commit
+# （顶层已把它读进 ADOFAI_LIB_ADOCAO_COMMIT）。拿不到就写全 0 并标 unknown，不影响可读性。
+if(ADOFAI_LIB_ADOCAO_COMMIT AND NOT ADOFAI_LIB_ADOCAO_COMMIT STREQUAL "unknown")
+    target_compile_definitions(adofai_archive PRIVATE
+        ADOCAO_GIT_COMMIT="${ADOFAI_LIB_ADOCAO_COMMIT}")
+endif()
 
 # 用 $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>（相对）而不是 FULL_*：配置期间
 # 第三方子项目会把 CMAKE_INSTALL_PREFIX 临时指到丢弃前缀，FULL_* 会把那个路径烘进导出文件。
