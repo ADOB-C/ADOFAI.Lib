@@ -23,7 +23,8 @@ A Dance of Fire and Ice 关卡（`.adofai`）的**可分发编译库**：解析 
 |---|---|
 | `ADOFAI::core` | ✅ 解析（明文）、时间线、位置解算、工具。**不依赖任何压缩库** |
 | `ADOFAI::archive` | ✅ `.adofai.xz` / `.adofai.zst` + 4 MB 滑窗流式解压。**可选**，见下 |
-| `ADOFAI::audio` | ⏳ P4 |
+| `ADOFAI::audio` | ✅ 打拍音合成/导出（`HitsoundManager`）—— 纯逻辑，**不需要 miniaudio** |
+| `ADOFAI::audio_device` | ✅ 设备播放（`AudioEngine` + stb_vorbis），**默认 OFF**（要 miniaudio）|
 | `ADOFAI::render` | ⏳ P5（**默认 OFF**，见下） |
 
 两个默认 OFF 的承诺都不只是开关：
@@ -71,8 +72,8 @@ cmake -B build \
 | CMake 选项 | 默认 | 说明 |
 |---|---|---|
 | `ADOFAI_LIB_ARCHIVE` | ON | `.adofai.xz` / `.adofai.zst` 容器。**OFF 也真的可用**：不编 archive 模块，core 照常，压缩谱运行期明确报错 |
-| `ADOFAI_LIB_AUDIO` | ON | 打拍音合成 + 解码（P4，暂未生效） |
-| `ADOFAI_LIB_AUDIO_DEVICE` | OFF | miniaudio 设备播放（P4） |
+| `ADOFAI_LIB_AUDIO` | ON | 打拍音合成/导出（`ADOFAI::audio`）—— 纯逻辑，不拉 miniaudio |
+| `ADOFAI_LIB_AUDIO_DEVICE` | OFF | 设备播放（`ADOFAI::audio_device`）—— 会引入 miniaudio + stb |
 | `ADOFAI_LIB_RENDER` | **OFF** | 砖块渲染（P5） |
 | `ADOFAI_LIB_ASSET_ZIP` | ON | 资产 zip（私有链 miniz）。**OFF 真的可用**：core 里零 `mz_` 符号、连 miniz 都不拉，zip 寻址退化成只走磁盘 |
 | `ADOFAI_LIB_BUNDLE_DEPS` | ON | 内嵌 lzma/zstd；**OFF = 用系统库**（`find_package(LibLZMA/zstd)`，已实测）|
@@ -148,14 +149,16 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-目前 4 条测试（`ARCHIVE=ON` 时 4/4；`OFF` 时 3/3，那条按设计跳过）：
+默认配置 6 条测试（各模块的开关会增减几条）：
 
 | 测试 | 验什么 |
 |---|---|
-| `level_parse_parity` | **从 ADOCAO 镜像来的对拍测试**：快路径 vs `cleanJson` + RapidJSON 老路径逐位一致；每个明文 fixture 还会在内存里压成 xz/zstd 再加载比对（这就是 round-trip）|
+| `level_parse_parity` | **从 ADOCAO 镜像来的对拍测试**：快路径 vs `cleanJson` + RapidJSON 老路径逐位一致；每个明文 fixture 还会在内存里压成 xz/zstd 再加载比对（这就是 round-trip）。仅 `ARCHIVE=ON` |
 | `headless_run` | 示例能跑完整条链 |
 | `headless_wav_structure` | 导出的 WAV 是结构合法的 16-bit 单声道 PCM，且不是全零静音 |
-| `archive_container` | `ARCHIVE=ON` 时 `.xz` 读得动；`OFF` 时**干净失败**（负向对照：静默当明文就红）。仅 `ARCHIVE=ON` |
+| `archive_container` | `ARCHIVE=ON` 时 `.xz` 读得动；`OFF` 时**干净失败**（负向对照：静默当明文就红）|
+| `audio_hitsound_mix` | 链了 `ADOFAI::audio` 时，用**现场合成**的音色 WAV 走一遍真混音（双声道 WAV、非零样本、取值分布不像直流）。不依赖 ADOCAO 的 `assets/hitsounds/` |
+| `audio_hitsound_rules` | **源码级护栏**：混音内核必须是饱和加法（`vqaddq_s16`/`_mm_adds_epi16` + 标量 clamp），且不许出现非饱和加法或 Nyquist 去重。负向对照已验 |
 
 还没搬的是 `tile_geometry` / `tile_expansion` / `geom_probe`——三个都要 render 模块，
 随 P5 一起，见 [MIRROR.md](MIRROR.md) 的"待补的镜像内容"。

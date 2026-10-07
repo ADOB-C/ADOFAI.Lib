@@ -25,22 +25,44 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 每一格都把 audio/audiodevice 写全：GitHub Actions 的表达式里没有 `||` 兜底，
+          # 缺字段会展开成空串、直接当非法参数传给 cmake。
           - name: bundled            # 默认：内嵌 lzma/zstd（FetchContent）
             archive: ON
             bundle: ON
             assetzip: ON
+            audio: ON
+            audiodevice: OFF
           - name: no-archive         # PLAN.md §5：OFF 时不该需要压缩库，且前缀干净
             archive: OFF
             bundle: ON
             assetzip: ON
+            audio: ON
+            audiodevice: OFF
           - name: system-deps        # 用系统库（liblzma / libzstd 的 CMake config）
             archive: ON
             bundle: OFF
             assetzip: ON
+            audio: ON
+            audiodevice: OFF
           - name: no-asset-zip       # 资产 zip 真的可关（上游 dc89c14 加了条件编译）
             archive: ON
             bundle: ON
             assetzip: OFF
+            audio: ON
+            audiodevice: OFF
+          - name: no-audio           # 打拍音合成可关（headless 仍能跑，只是退回合成点击音）
+            archive: ON
+            bundle: ON
+            assetzip: ON
+            audio: OFF
+            audiodevice: OFF
+          - name: all-modules        # 全开：连设备播放那条线（miniaudio + stb）也要能编
+            archive: ON
+            bundle: ON
+            assetzip: ON
+            audio: ON
+            audiodevice: ON
     steps:
       - uses: actions/checkout@v4
 
@@ -61,7 +83,9 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DADOFAI_LIB_ARCHIVE=${{ matrix.archive }} \
             -DADOFAI_LIB_BUNDLE_DEPS=${{ matrix.bundle }} \
-            -DADOFAI_LIB_ASSET_ZIP=${{ matrix.assetzip }}
+            -DADOFAI_LIB_ASSET_ZIP=${{ matrix.assetzip }} \
+            -DADOFAI_LIB_AUDIO=${{ matrix.audio }} \
+            -DADOFAI_LIB_AUDIO_DEVICE=${{ matrix.audiodevice }}
 
       - name: Build
         run: cmake --build build --parallel

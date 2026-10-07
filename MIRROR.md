@@ -16,6 +16,7 @@ src/adofai/core/level/{ByteSource,JsonCleaner,LevelData,LevelPath}.{hpp,cpp}
 src/adofai/core/timeline/*            Timeline / PositionSolver / PlaybackClock / HitsoundTimestampGroup
 src/adofai/core/util/*                AssetPaths / DataFile / Logger / Progress / ThreadPool
 src/adofai/archive/{LevelArchive.{hpp,cpp},Install.hpp}
+src/adofai/audio/{HitsoundManager.{hpp,cpp},AudioEngine.{hpp,cpp},stb_vorbis_impl.cpp}
 tests/level_parse_test.cpp  tests/level_fixtures/**  tests/charts/**
 tests/gen_level_fixtures.py  tests/gen_render_fixtures.py
 ```
@@ -151,12 +152,12 @@ PLAN.md §6 把 `core` 排在 P2、`archive` 排在 P3。P2 开始时 core 还�
 
 - `tests/{tile_geometry_test.cpp,tile_expansion_test.cpp,geom_probe_test.cpp}`（都要 render，P5）
   与 `tests/capture_states.txt`（本体像素门槛用，按白名单排除）
-- `audio/**`（P4）、`render/**` + `glad/**` + `assets/shaders/**`（P5）
+- `render/**` + `glad/**` + `assets/shaders/**`（P5）
 - `tools/tile-geometry-lab/**`（P5，跟着几何走）
 
 ## 待补的镜像内容
 
 - `tests/{tile_geometry_test.cpp,tile_expansion_test.cpp,geom_probe_test.cpp}`（都要 render，P5）
   与 `tests/capture_states.txt`（本体像素门槛用，按白名单排除）
-- `audio/**`（P4）、`render/**` + `glad/**` + `assets/shaders/**`（P5）
+- `render/**` + `glad/**` + `assets/shaders/**`（P5）
 - `tools/tile-geometry-lab/**`（P5，跟着几何走）

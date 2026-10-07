@@ -66,6 +66,25 @@ if(Python3_Interpreter_FOUND)
                 "$<TARGET_FILE:adofai_headless>"
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/smoke_level.adofai"
                 "${_archive_expect}")
+
+    # 打拍音：链了 ADOFAI::audio 时，用**现场合成**的音色 WAV 走一遍真混音
+    # （不依赖 ADOCAO 的 assets/hitsounds/ —— 那不在本库白名单里）。
+    if(ADOFAI_LIB_ENABLE_AUDIO)
+        add_test(NAME audio_hitsound_mix
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/check_hitsound.py"
+                    "$<TARGET_FILE:adofai_headless>"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/data/smoke_level.adofai"
+                    "${CMAKE_CURRENT_BINARY_DIR}/Kick.wav"
+                    "${CMAKE_CURRENT_BINARY_DIR}/hitsound_out.wav")
+
+        # 源码级护栏：混音内核必须是饱和加法（每次相加都 clamp），且不许有 Nyquist 去重。
+        # 负向对照已验：把 vqaddq_s16 换成 vaddq_s16、或插入一行去重，都会红。
+        add_test(NAME audio_hitsound_rules
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/check_hitsound_rules.py"
+                    "${ADOFAI_LIB_SRC_ROOT}/audio/HitsoundManager.cpp")
+    endif()
 else()
-    message(STATUS "没找到 Python3，跳过 headless_wav_structure / archive_container 测试")
+    message(STATUS "没找到 Python3，跳过 headless_wav_structure / archive_container / audio_hitsound_mix")
 endif()

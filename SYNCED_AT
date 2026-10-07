@@ -7,6 +7,9 @@ ADOCAO_COMMIT_DATE=2026-10-06
 SYNCED_BY=library-sync
 # 对齐时 ADOCAO 的工作区是干净的（git status 为空），所以上面这个 commit 就是全部内容。
 #
+# 库侧 P4 追加镜像了 audio/（同一 commit，代码未变）：
+#   src/adofai/audio/{HitsoundManager.{hpp,cpp},AudioEngine.{hpp,cpp},stb_vorbis_impl.cpp}
+#
 # 相对上一次对齐（a1261c7）多了一笔：
 #   dc89c14  库那边提的两个补丁：archive 公共头 pimpl（头不再需要 lzma/zstd）+ 资产 zip 可关
 #   → 库侧随之打开两个开关：ADOFAI_LIB_ARCHIVE=OFF 与 ADOFAI_LIB_ASSET_ZIP=OFF 现在都真的可用，

@@ -1,20 +1,22 @@
 // examples/headless —— 库的消费者验收程序（PLAN.md §6）。它只碰 ADOFAI::core（可选加
-// ADOFAI::archive），一行 GL 都没有：解析 .adofai（明文，或链了 archive 时的 .xz/.zst 容器）
-// → 建时间线 → 解算位置 → 把打拍音时刻导出成 WAV。
+// ADOFAI::archive / ADOFAI::audio），一行 GL 都没有：
+//   解析 .adofai（明文，或链了 archive 时的 .xz/.zst 容器）→ 建时间线 → 解算位置
+//   → 打拍音合成（链了 audio 且给了音色目录时）→ 导出 WAV。
 //
-// 这里刻意"自己手写 WAV"而不链 ADOFAI::audio：audio 模块 P4 才搬过来，而这个例子属于 P2，
-// 它要证明的是"core 的公共 API 能独立用起来"。
+//   headless <level.adofai> [out.wav] [hitsound_dir]
 //
-//   headless <level.adofai> [out.wav]        # 不给 out.wav 就只打印，不写文件
+// 打拍音那一段有两条路，看第三个参数：
+//   * 给了 hitsound_dir（含 Kick.wav / SnareAcoustic2.wav …）→ 用 ADOFAI::audio 的
+//     HitsoundManager 做**真正的打拍音混音**（每层一个采样、16 位累加且每次相加都 clamp，
+//     那是产品铁律，见 AGENTS.md 的 "Hitsounds"）；
+//   * 没给 → 退回本文件里的合成点击音，于是示例在没有音色资产时也照样能跑、能验收。
+// 这样 tests/data/smoke_level.adofai 的那两条测试不依赖任何资产。
 //
 // 压缩谱面的启用方式（上游 2026-10 的依赖倒置）：链上 ADOFAI::archive，并在启动时调一次
 // adofai::archive::install()。没链 / 没调时，明文照常解析、压缩容器给出明确错误。
 // 这里**必须**由构建系统告知（examples/headless/CMakeLists.txt 里的
 // ADOFAI_HEADLESS_HAVE_ARCHIVE），不能用 __has_include 判断：OFF 时
 // archive/Install.hpp 仍在源码树里、只是没编进任何 target，头在而符号不在。
-//
-// 每层一个点击音（同 ADOFAI_HitSound 的老做法：不带拖尾的双极性脉冲）——
-// 不引入任何音频依赖，只用来证明时间线确实算出了逐层的打拍时刻。
 
 #include <algorithm>
 #include <cmath>
@@ -25,6 +27,9 @@
 
 #if defined(ADOFAI_HEADLESS_HAVE_ARCHIVE)
 #  include "archive/Install.hpp"
+#endif
+#if defined(ADOFAI_HEADLESS_HAVE_AUDIO)
+#  include "audio/HitsoundManager.hpp"
 #endif
 
 #include "core/level/LevelData.hpp"
@@ -94,11 +99,12 @@ bool writeClickTrackWav(const std::string& path,
 int main(int argc, char** argv)
 {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <level.adofai> [out.wav]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <level.adofai> [out.wav] [hitsound_dir]\n", argv[0]);
         return 2;
     }
     const std::string levelPath = argv[1];
     const std::string outWav    = (argc >= 3) ? argv[2] : std::string();
+    const std::string hitsDir   = (argc >= 4) ? argv[3] : std::string();
 
 #ifdef ADOFAI_HEADLESS_HAVE_ARCHIVE
     // 注册解压后端：之后 .adofai.xz / .adofai.zst 就能读了。
@@ -148,12 +154,40 @@ int main(int argc, char** argv)
         std::printf("lastHit        : %.6f s\n", hits.back());
     }
 
-    if (!outWav.empty()) {
+    if (outWav.empty()) return 0;
+
+    // 打拍音：能链 audio 且给了音色目录，就走真正的混音；否则退回合成点击音。
+    bool wroteReal = false;
+#ifdef ADOFAI_HEADLESS_HAVE_AUDIO
+    if (!hitsDir.empty()) {
+        adofai::HitsoundManager hs;
+        hs.init(hitsDir);                  // 直接给音色目录（内含 Kick.wav …）
+        hs.setEnabled(true);
+        hs.setVolume(100.0f);
+        const auto groups = timeline.getHitsoundTimestampGroups();
+        if (hs.preSynthesize(groups, (float)total)) {
+            if (hs.isSynthesized() && hs.totalFrames() > 0) {
+                if (hs.writeWav(outWav)) {
+                    std::printf("hitsounds      : real mix (%zu groups, %d hits, %zu frames)\n",
+                                groups.size(), hs.lastMixedHits(), hs.totalFrames());
+                    wroteReal = true;
+                }
+            }
+        }
+        if (!wroteReal)
+            std::fprintf(stderr, "hitsounds      : 混音没产出（音色目录对不上？）-> 退回合成点击音\n");
+    }
+#else
+    if (!hitsDir.empty())
+        std::fprintf(stderr, "hitsounds      : 本构建没链 ADOFAI::audio -> 退回合成点击音\n");
+#endif
+
+    if (!wroteReal) {
         if (!writeClickTrackWav(outWav, hits, total)) {
             std::fprintf(stderr, "write failed: %s\n", outWav.c_str());
             return 1;
         }
-        std::printf("wrote          : %s\n", outWav.c_str());
     }
+    std::printf("wrote          : %s\n", outWav.c_str());
     return 0;
 }
