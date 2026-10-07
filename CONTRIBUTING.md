@@ -114,6 +114,7 @@ ctest --test-dir build
 | 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | 6/6，core 里零 `mz_` 符号 |
 | 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | 4/4 |
 | 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | 6/6（会引入 miniaudio + stb）|
+| render=ON | `-DADOFAI_LIB_RENDER=ON` | 11/11（引入 glad + GLFW + 平台 GL；三层几何）|
 
 CI 里这 6 格都在 Linux 跑（[.github/workflows/build.yml](.github/workflows/build.yml)），
 另两平台只跑默认配置。
@@ -158,7 +159,11 @@ cmake --build build
 1. **第三方 install 会污染消费者前缀**：`ARCHIVE=ON` 时 glm/lzma/zstd/miniz 的头与 `.a`
    也进前缀（`ARCHIVE=OFF` 时干净）。根因是**静态库不传递依赖** —— `libadofai_archive.a`
    里只有调用点。两条出路写在 MIRROR.md，其中"把厂商代码合并进我们自己的 `.a`"未做。
-2. `ADOFAI::render` 还没搬（P5）。
+2. `ADOFAI::render` 已搬（P5），但**像素门槛那一层（`capture-gate.sh` 的 50 状态逐字节）没搬**：
+   它要跑本体 app 抓帧，属于本体验收。库里现在覆盖的是 L0（五边形 + 调用点护栏）、
+   L1（CPU 逐位）、L2（GPU 逐位）、以及内嵌回退 GLSL 与 `assets/shaders/*` 的逐字一致。
+   另外 CI 的 Ubuntu runner 没有 GL 上下文，`geom_probe` 会打印 SKIP 退 0 —— workflow 里
+   专门有一步**报告**它是跑了还是跳过了，别把"绿"当成"GPU 那一层验过了"。
 3. RapidJSON 是消费者唯一要手动给 include 的公共依赖。
 
 ## 7. 铁律（改动时别碰坏）

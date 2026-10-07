@@ -2,6 +2,9 @@
 #
 # 解析对拍 + headless 那几条（core/archive/audio），以及 render=ON 时的三层几何验收。
 
+# Python 检查脚本（WAV 结构 / 压缩容器 / 打拍音 / shader 一致性）都用它，所以先找一次。
+find_package(Python3 COMPONENTS Interpreter QUIET)
+
 # ── 三层几何（全部要 render；上游 PLAN.md §7 的"改几何必须三层全绿"）────────────
 if(ADOFAI_LIB_ENABLE_RENDER)
     # L0 中旋五边形不变量 + **源码级调用点护栏**：把 render/TileMesh.cpp 当数据读，
@@ -57,6 +60,16 @@ if(ADOFAI_LIB_ENABLE_RENDER)
                 "${CMAKE_SOURCE_DIR}/assets/shaders"
                 "$<TARGET_FILE_DIR:adofai_geom_probe_test>/assets/shaders"
         COMMENT "拷贝 assets/shaders 到构建目录（geom_probe 按 CWD 找它）")
+
+    # 内嵌回退 GLSL 必须与 assets/shaders/* 逐字相同（PLAN.md §7 的铁律之一）。
+    # 它只在资产缺失时才生效，所以漂移了正常构建永远不红 —— 必须机械校验。
+    # 负向对照已验：改 assets 那边、或只改 Shaders.hpp 里的内嵌串，都会红并指出首个差异行。
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME shader_fallback
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/check_shader_fallback.py"
+                    "${CMAKE_SOURCE_DIR}")
+    endif()
 endif()
 
 # ── 解析对拍（从 ADOCAO 镜像）──────────────────────────────────────────────
@@ -107,7 +120,6 @@ add_test(NAME headless_run
             "${CMAKE_CURRENT_SOURCE_DIR}/data/smoke_level.adofai"
             "${CMAKE_CURRENT_BINARY_DIR}/smoke_out.wav")
 
-find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME headless_wav_structure
         COMMAND ${Python3_EXECUTABLE}
