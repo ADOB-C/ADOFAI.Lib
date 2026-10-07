@@ -8,3 +8,9 @@ if(ADOFAI_LIB_ENABLE_ARCHIVE)
     add_subdirectory(adofai/archive)
 endif()
 add_subdirectory(adofai/core)
+
+# audio 依赖 core（HitsoundManager.hpp 引 core/timeline/HitsoundTimestampGroup.hpp）；
+# 可选的设备播放（audio/CMakeLists.txt 里由 ADOFAI_LIB_AUDIO_DEVICE 控制）也在这个目录里。
+if(ADOFAI_LIB_ENABLE_AUDIO)
+    add_subdirectory(adofai/audio)
+endif()

@@ -155,13 +155,44 @@ endif()
 # 关掉后 readDataFile() 直接走 dataDir / 搜索根 / 直接路径，行为等于"zipName 为空"。
 # 宏由 src/adofai/core/CMakeLists.txt 定义。
 
+# stb / miniaudio —— 只服务可选的设备播放（ADOFAI::audio_device，默认 OFF）。
+# 默认构建**完全不拉它们**：合成/导出打拍音是纯逻辑，不需要设备（见 src/adofai/audio/CMakeLists.txt）。
+if(ADOFAI_LIB_AUDIO AND ADOFAI_LIB_AUDIO_DEVICE)
+    # stb：只要 stb_vorbis.c（miniaudio 的 OGG 解码后端）
+    FetchContent_Declare(stb
+        GIT_REPOSITORY https://github.com/nothings/stb.git
+        GIT_TAG master
+        GIT_SHALLOW TRUE)
+    FetchContent_GetProperties(stb)
+    if(NOT stb_POPULATED)
+        FetchContent_Populate(stb)
+    endif()
+
+    # miniaudio（单头）
+    set(MINIAUDIO_NO_EXTRA_NODES ON CACHE BOOL "" FORCE)
+    set(MINIAUDIO_NO_LIBVORBIS ON CACHE BOOL "" FORCE)
+    set(MINIAUDIO_NO_LIBOPUS ON CACHE BOOL "" FORCE)
+    set(MINIAUDIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(MINIAUDIO_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    # 别让 miniaudio 去探测我们不要的后端（SDL2 / Steam Audio）
+    set(SDL2_LIBRARY "SDL2_LIBRARY-NOTFOUND" CACHE FILEPATH "" FORCE)
+    set(STEAMAUDIO_LIBRARY "STEAMAUDIO_LIBRARY-NOTFOUND" CACHE FILEPATH "" FORCE)
+    FetchContent_Declare(miniaudio
+        GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+        GIT_TAG 0.11.22
+        GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(miniaudio)
+endif()
+
 # ── Modules ──────────────────────────────────────────────────────────────────
 # archive 是**可选**模块（上游 2026-10 的依赖倒置）：core 只认 core/level/ByteSource.hpp
 # 那套接口，压缩能力由 archive 模块通过 adofai::archive::install() 注册进来。
 # ADOFAI_LIB_ARCHIVE=OFF 就是不编那个目录 —— 不需要任何桩，core 自己会给压缩谱明确报错。
-# audio(P4) / render(P5) 还没搬，选项先留着。
+# audio 已搬（P4）：ADOFAI::audio = 合成/导出（纯逻辑）；ADOFAI::audio_device = 设备播放（默认 OFF）。
+# render(P5) 还没搬，选项先留着。
 set(ADOFAI_LIB_ENABLE_CORE ON)
 set(ADOFAI_LIB_ENABLE_ARCHIVE ${ADOFAI_LIB_ARCHIVE})
+set(ADOFAI_LIB_ENABLE_AUDIO ${ADOFAI_LIB_AUDIO})
 
 add_subdirectory(src)
 
@@ -176,10 +207,16 @@ endif()
 
 # ── Install / export ─────────────────────────────────────────────────────────
 if(ADOFAI_LIB_INSTALL)
-    # ARCHIVE=OFF 时只装 core —— 没有 ADOFAI::archive，消费者 link 它是编译期报错。
+    # 各 OFF 的模块不生成 target —— 消费者 link 它是编译期报错（PLAN.md §5 的口径）。
     set(_adofai_install_targets adofai_core)
     if(ADOFAI_LIB_ENABLE_ARCHIVE)
         list(APPEND _adofai_install_targets adofai_archive)
+    endif()
+    if(ADOFAI_LIB_ENABLE_AUDIO)
+        list(APPEND _adofai_install_targets adofai_audio)
+        if(ADOFAI_LIB_AUDIO_DEVICE)
+            list(APPEND _adofai_install_targets adofai_audio_device)
+        endif()
     endif()
     install(TARGETS ${_adofai_install_targets}
         EXPORT ADOFAILibTargets
@@ -196,6 +233,17 @@ if(ADOFAI_LIB_INSTALL)
         install(DIRECTORY "${ADOFAI_LIB_SRC_ROOT}/archive/"
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/archive
             FILES_MATCHING PATTERN "*.hpp")
+    endif()
+    if(ADOFAI_LIB_ENABLE_AUDIO)
+        # 逐个装而不是 install(DIRECTORY)：AudioEngine.hpp 只对链了 audio_device 的人有意义
+        # （它虽然不 include miniaudio —— 只前置声明 ma_device / ma_decoder —— 但那个类是设备
+        # 模块的内容）。HitsoundManager.hpp 才是纯合成/导出的公共头。
+        install(FILES "${ADOFAI_LIB_SRC_ROOT}/audio/HitsoundManager.hpp"
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/audio)
+        if(ADOFAI_LIB_AUDIO_DEVICE)
+            install(FILES "${ADOFAI_LIB_SRC_ROOT}/audio/AudioEngine.hpp"
+                DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/audio)
+        endif()
     endif()
 
     # 生成的版本头（#include <adofai/version.hpp>）
@@ -223,5 +271,6 @@ if(ADOFAI_LIB_INSTALL)
 endif()
 
 message(STATUS "ADOFAI.Lib ${PROJECT_VERSION}: core=ON archive=${ADOFAI_LIB_ARCHIVE} "
-               "audio=${ADOFAI_LIB_AUDIO}(未搬) render=${ADOFAI_LIB_RENDER}(未搬) "
+               "audio=${ADOFAI_LIB_AUDIO} audio_device=${ADOFAI_LIB_AUDIO_DEVICE} "
+               "render=${ADOFAI_LIB_RENDER}(未搬) "
                "asset_zip=${ADOFAI_LIB_ASSET_ZIP} bundle_deps=${ADOFAI_LIB_BUNDLE_DEPS}")
