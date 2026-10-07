@@ -204,7 +204,10 @@ jobs:
           ./build/app "$GITHUB_WORKSPACE/tests/data/smoke_level.adofai"
 
   macOS:
-    name: macOS-default
+    # 这一格开 render：只有它会真的建 GL 上下文，所以 GPU 逐位那一层（geom_probe）
+    # **只有在这儿才可能真跑** —— Ubuntu runner 上 glfwInit 会失败并打印 SKIP
+    # （见 linux 的 "Report whether the GPU bitwise layer actually ran" 那一步）。
+    name: macOS-render-on
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -219,13 +222,27 @@ jobs:
         run: brew install ninja
 
       - name: Configure
-        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DADOFAI_LIB_RENDER=ON
 
       - name: Build
         run: cmake --build build --parallel
 
       - name: Tests
         run: ctest --test-dir build --output-on-failure
+
+      # 明确报告 GPU 那一层到底跑没跑（与 linux 那格同一个理由：SKIP 退 0 不等于验过）。
+      - name: Report whether the GPU bitwise layer actually ran
+        run: |
+          set +e
+          ./build/tests/adofai_geom_probe_test tests/charts/angles360.adofai \
+              tests/charts/shapes_exhaustive.adofai 2>&1 | tee /tmp/geom.log
+          set -e
+          if grep -q "SKIP" /tmp/geom.log; then
+            echo "::warning title=geom_probe skipped::macOS runner 上也没拿到 GL 上下文。"
+          else
+            echo "GPU 逐位那一层真的跑了："
+            grep -E "逐位|坐标|最大偏差" /tmp/geom.log | tail -3
+          fi
 
       # 系统库那条路在 macOS 上也该能走通（brew 的 zstd 带 CMake config，
       # liblzma 走 CMake 自带的 Find 模块）。
