@@ -93,7 +93,7 @@ PLAN.md §6 把 `core` 排在 P2、`archive` 排在 P3。P2 开始时 core 还�
 3. **第三方子项目的 install 规则会污染消费者前缀**（ARCHIVE=ON 时）：`glm` / `liblzma` /
    `libzstd` / `miniz` 的头文件、`.a`、cmake config 都会进前缀，上游那 4 个 CLI
    （`xz`/`xzdec`/`lzmadec`/`lzmainfo`）也照常编、照常装。ARCHIVE=OFF 时前缀是干净的
-   （实测 452 文件、零压缩库痕迹）。
+   （实测 464 文件 —— P4 前是 452 —— 零压缩库痕迹）。
 
    **为什么必须让 lzma/zstd 进前缀（这是本轮最关键的实测结论）**：`ADOFAI::archive` 是
    静态库，而**静态库不传递依赖** —— `libadofai_archive.a` 里只有调用点，lzma/zstd 的代码在
@@ -121,8 +121,9 @@ PLAN.md §6 把 `core` 排在 P2、`archive` 排在 P3。P2 开始时 core 还�
 
    **可行方向（本轮试过，被一个硬问题挡住，未落地）**：把 lzma / zstd / miniz 从
    `add_subdirectory` 换成 `ExternalProject_Add` + 独立前缀（`<prefix>/lzma-ep` 等）。
-   实测**确实能让我们的 install 树干净**：前缀里只剩 `adofai/` 与 `glm/`（466 文件 vs
-   原来的 554），上游 4 个 CLI 也不再装进来，而且 ExternalProject 不再需要
+   实测**确实能让我们的 install 树干净**：前缀里只剩 `adofai/` 与 `glm/`（当时 466 文件 vs
+   原来的 554；P4 之后同样口径是 464 vs 556 —— 数字随模块增加而变，重要的是"只剩 adofai/ 与
+   glm/"这一点），上游 4 个 CLI 也不再装进来，而且 ExternalProject 不再需要
    `EXCLUDE_FROM_ALL` 那套绕法（用 `--component liblzma_Runtime --component
    liblzma_Development` 精确装库与头，不碰 CLI）。**但挡在一个硬问题上**：
    * **静态库不传递依赖**。`libadofai_archive.a` 里引用 `ZSTD_*` / `lzma_*`，而依赖被装到
