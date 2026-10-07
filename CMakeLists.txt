@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 project(ADOFAI.Lib
     VERSION 0.1.0
     DESCRIPTION "Reusable ADOFAI level parsing / timeline / hitsound / tile rendering library"
-    HOMEPAGE_URL "https://github.com/CHT-1192/ADOFAI.Lib"
+    HOMEPAGE_URL "https://github.com/ADOB-C/ADOFAI.Lib"
     LANGUAGES CXX)
 
 # ── Options ──────────────────────────────────────────────────────────────────

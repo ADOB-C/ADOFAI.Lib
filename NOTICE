@@ -1,7 +1,7 @@
 ADOFAI.Lib
 Copyright 2026 ADOCAO contributors
 
-本产品包含由 ADOCAO 项目（https://github.com/CHT-1192/ADOCAO）开发的软件。
+本产品包含由 ADOCAO 项目（https://github.com/ADOB-C/ADOCAO）开发的软件。
 `src/adofai/**` 下的源码是 ADOCAO 的单向镜像（见 MIRROR.md / SYNCED_AT），
 按 Apache License 2.0 授权。
 
