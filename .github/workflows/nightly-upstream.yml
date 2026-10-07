@@ -1,0 +1,83 @@
+name: Nightly upstream compatibility
+
+# 目的：**每天**跑一次"本库的构建/测试能不能吃下上游 ADOCAO 的最新代码"。
+#
+# 为什么需要它：正常的对齐是**手动、周期性**的（见 CONTRIBUTING.md），也就是说上游的改动
+# 要等到下次对齐才会暴露问题 —— 那时可能已经积累了好几个提交，界面上看不出是哪一笔弄坏的。
+# 这个 job 把"对齐 + 构建 + 测试"跑在**未经人工确认的上游 HEAD** 上，坏了当天就知道。
+#
+# 它**不修改仓库**（sync 的结果只在 runner 的工作区里），也**不取代手动对齐** ——
+# SYNCED_AT 仍然只在人工对齐时更新。
+
+on:
+  schedule:
+    - cron: '17 3 * * *'     # 每天 03:17 UTC（错开整点）
+  workflow_dispatch:          # 也可以手动触发
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upstream-head:
+    name: upstream ADOCAO @ master
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Clone upstream ADOCAO (master)
+        run: |
+          git clone --depth 1 https://github.com/ADOB-C/ADOCAO.git upstream
+          echo "对齐到的上游 commit："
+          git -C upstream log -1 --oneline
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config \
+            liblzma-dev libzstd-dev \
+            libwayland-dev libxkbcommon-dev libgl-dev \
+            libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+
+      # 与手动对齐同一套白名单（CONTRIBUTING.md §3）。库自己的 CMakeLists 不动。
+      # 上游新增的 .cpp 会被 rsync 一并带过来，所以"忘了加进清单"这类问题在这里也能暴露。
+      - name: Sync whitelisted sources from upstream (no commit)
+        run: |
+          for d in core archive audio render glad; do
+            rsync -a --exclude='.DS_Store' --exclude='CMakeLists.txt' "upstream/$d/" "src/adofai/$d/"
+          done
+          rsync -a --exclude='.DS_Store' upstream/assets/shaders/ assets/shaders/
+          rsync -a --exclude='.DS_Store' upstream/tests/level_fixtures/ tests/level_fixtures/
+          rsync -a --exclude='.DS_Store' upstream/tests/charts/ tests/charts/
+          for f in level_parse_test.cpp lzma_mt_compat_test.cpp \
+                   tile_geometry_test.cpp tile_expansion_test.cpp geom_probe_test.cpp \
+                   gen_level_fixtures.py gen_render_fixtures.py; do
+            [ -f "upstream/tests/$f" ] && cp "upstream/tests/$f" tests/ || true
+          done
+          echo "== 同步后与库里原有文件的差异（只看白名单区域）=="
+          git --no-pager diff --stat -- src/adofai tests assets || true
+
+      # render=ON 能覆盖最多代码路径（core + archive + audio + render + glad），
+      # 一次构建就能验"上游 HEAD 还吃不吃得下"。
+      - name: Configure (render=ON)
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DADOFAI_LIB_RENDER=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+      # 与常规 CI 同样的诚实处理：geom_probe 没 GL 上下文时会 SKIP 退 0，
+      # 别让"绿"冒充"GPU 那一层验过了"。
+      - name: Report whether the GPU bitwise layer actually ran
+        run: |
+          set +e
+          ./build/tests/adofai_geom_probe_test tests/charts/angles360.adofai \
+              tests/charts/shapes_exhaustive.adofai 2>&1 | tee /tmp/geom.log
+          set -e
+          if grep -q "SKIP" /tmp/geom.log; then
+            echo "::warning title=geom_probe skipped::本 job 的 runner 没有 GL 上下文 → GPU 逐位没跑。"
+          else
+            echo "GPU 逐位那一层真的跑了。"
+          fi

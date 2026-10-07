@@ -104,7 +104,7 @@ hs.writeWav("out.wav");             // 也可以 buffer() 交给设备播放
 | `ADOFAI::archive` | ON | `.adofai.xz` / `.adofai.zst` + 4 MB 滑窗流式解压 | core；内嵌 lzma/zstd |
 | `ADOFAI::audio` | ON | 打拍音合成 / 混音 / WAV 导出 | core。**不需要 miniaudio** |
 | `ADOFAI::audio_device` | OFF | 设备播放（`adofai::AudioEngine`）+ OGG 解码 | audio；引入 miniaudio + stb |
-| `ADOFAI::render` | OFF | 砖块渲染 | 尚未提供 |
+| `ADOFAI::render` | OFF | 砖块渲染（`TileMesh` / `TileShape` / glad）| core + glad + GLFW + 平台 GL |
 
 **关掉的模块不会生成 target** —— link 它是**编译期**报错，而不是运行期才发现。
 `render` 关闭时，配置阶段不会 `find_package(OpenGL/glfw)`，公共头里也不会出现 GL 类型。
@@ -165,10 +165,10 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 
 ## 版本
 
-生成的 `<adofai/version.hpp>` 里有两个不同的东西：
+`ADOFAI_LIB_VERSION`（库自己的语义化版本）与 `ADOFAI_LIB_ADOCAO_COMMIT`（镜像自哪个
+上游 commit）是两个不同的东西 —— **后者才是源码的真身份**，每次对齐都会变。
 
-- `ADOFAI_LIB_VERSION` —— 库自己的语义化版本；
-- `ADOFAI_LIB_ADOCAO_COMMIT` —— 这份源码镜像自上游 ADOCAO 的哪个 commit。
+怎么读、怎么钉（tag / 跟 main / 完全可复现）见 [VERSIONING.md](VERSIONING.md)。
 
 ## 测试
 
@@ -176,7 +176,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-默认 6 条（随模块开关增减）：
+**render=OFF 7 条 / render=ON 11 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|
@@ -186,6 +186,25 @@ ctest --test-dir build
 | `archive_container` | `ARCHIVE=ON` 读得动 `.xz`/`.zst`；`OFF` 干净失败 |
 | `audio_hitsound_mix` | 用现场合成的音色走一遍真混音 |
 | `audio_hitsound_rules` | 打拍音铁律的源码护栏（必须饱和加法、不许 Nyquist 去重）|
+| `lzma_mt_compat` | lzma_mt 内存字段的跨版本选择（5.4 起字段改名）——纯编译期，不依赖压缩库 |
+| `tile_geometry` / `tile_expansion` / `geom_probe` | 三层几何：五边形不变量 + 调用点护栏 / CPU 逐位 / GPU 逐位。**都要 render=ON** |
+| `shader_fallback` | `render/Shaders.hpp` 的内嵌回退 GLSL 必须与 `assets/shaders/*` 逐字相同。**要 render=ON** |
+
+## 状态与上游
+
+这个仓库是 [ADOCAO](https://github.com/ADOB-C/ADOCAO)（本体）的**单向镜像**：本体的源码按
+白名单定期拷过来，所以这里的源码始终是本体某个 commit 的逐字节副本（当前对齐点见
+[SYNCED_AT](SYNCED_AT)）。**本体不依赖本库**，改镜像源码要先改本体。
+
+模块进度：core / archive / audio / audio_device / render **都已可用**。
+没有搬的是**像素门槛**那层验收（它要跑本体 app 抓帧，属于本体验收）。
+
+CI：三平台 × 选项矩阵（含 render ON/OFF）全绿；另有一个
+[nightly job](.github/workflows/nightly-upstream.yml) 每天拿**未经确认的上游 HEAD** 跑一遍
+"镜像 + 构建 + 测试"，让上游的破坏性改动当天就暴露，而不是等到下次对齐。
+
+> 注意：CI 的 runner 没有 GL 上下文，GPU 逐位那一层（`geom_probe`）在那里会打印 `SKIP`。
+> workflow 里有专门一步报告它跑没跑 —— 别把"绿"当成"GPU 验过了"。
 
 ## Acknowledgements
 
