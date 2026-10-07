@@ -10,6 +10,14 @@
 import struct
 import sys
 
+# Windows 控制台默认不是 UTF-8（cp1252/cp936），直接 print 非 ASCII 会抛
+# UnicodeEncodeError（CI 上真踩过：4 条测试全挂）。这里强制把标准流改成 UTF-8。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):   # 老 Python / 被重定向过的流
+        pass
+
 
 def fail(msg):
     print(f"FAIL: {msg}")
