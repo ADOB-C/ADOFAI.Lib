@@ -59,8 +59,11 @@ def main():
         if os.path.exists(p):
             os.remove(p)
 
+    # encoding 必须显式给 UTF-8（同 check_archive.py 的说明）；errors 兜住乱码，
+    # 免得解码失败把 stdout 变成 None、后面的 in 判断直接 TypeError。
     proc = subprocess.run([exe, level, out_path, hits_dir],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         print(f"FAIL: headless 退出码 {proc.returncode}\n{proc.stdout}\n{proc.stderr}")
         return 1

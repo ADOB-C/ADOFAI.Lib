@@ -28,7 +28,10 @@ for _s in (sys.stdout, sys.stderr):
 
 
 def run(binary, path):
-    p = subprocess.run([binary, path], capture_output=True, text=True)
+    # encoding 必须显式给 UTF-8：Windows 上 text=True 会按 cp1252 **解码**子进程输出，
+    # 遇到非 cp1252 字节直接抛 UnicodeDecodeError（CI 上真踩过）。
+    p = subprocess.run([binary, path], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")
     return p.returncode, p.stdout, p.stderr
 
 
