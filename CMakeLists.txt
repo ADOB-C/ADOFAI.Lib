@@ -10,6 +10,7 @@ project(ADOFAI.Lib
 # 默认值按 PLAN.md §6 的表。RENDER 默认 OFF 是一条承诺，见 §5：
 # OFF 时不 find_package(OpenGL/glfw)、公共头里不出现 GL 类型、装出来的 target 里没有 ADOFAI::render。
 option(ADOFAI_LIB_ARCHIVE      "xz / zstd 谱面容器（ADOFAI::archive）"          ON)
+option(ADOFAI_LIB_EXPORT       "谱面导出（ADOFAI::export）—— 写 .adofai/.xz/.zst/.adocao" ON)
 option(ADOFAI_LIB_AUDIO        "打拍音合成 + 解码（ADOFAI::audio，P4）"          ON)
 option(ADOFAI_LIB_AUDIO_DEVICE "miniaudio 设备播放（ADOFAI::audio_device）"      OFF)
 option(ADOFAI_LIB_RENDER       "砖块渲染（ADOFAI::render，P5）—— 默认 OFF"       OFF)
@@ -25,6 +26,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+# 压缩库的接线（archive 与 export 共用一份；模块里 adofai_link_compression(<target>)）。
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ADOFAICompression.cmake")
 
 # 版本头（库自己的文件，生成到构建目录）。
 # 对齐到的 ADOCAO commit 从 SYNCED_AT 里读出来，免得同一个事实写在两个地方。
@@ -213,6 +216,7 @@ endif()
 # render 已搬（P5）：默认 OFF；ON 时引入 glad + GLFW + 平台 GL（见上）。
 set(ADOFAI_LIB_ENABLE_CORE ON)
 set(ADOFAI_LIB_ENABLE_ARCHIVE ${ADOFAI_LIB_ARCHIVE})
+set(ADOFAI_LIB_ENABLE_EXPORT ${ADOFAI_LIB_EXPORT})
 set(ADOFAI_LIB_ENABLE_AUDIO ${ADOFAI_LIB_AUDIO})
 set(ADOFAI_LIB_ENABLE_RENDER ${ADOFAI_LIB_RENDER})
 
@@ -233,6 +237,11 @@ if(ADOFAI_LIB_INSTALL)
     set(_adofai_install_targets adofai_core)
     if(ADOFAI_LIB_ENABLE_ARCHIVE)
         list(APPEND _adofai_install_targets adofai_archive)
+    endif()
+    if(ADOFAI_LIB_ENABLE_EXPORT)
+        # export 的公共头里没有压缩库类型，但它**代码里**链着 archive（PUBLIC）。
+        # archive=OFF 时它只链 core，所以这一条在两种配置下都自洽。
+        list(APPEND _adofai_install_targets adofai_export)
     endif()
     if(ADOFAI_LIB_ENABLE_AUDIO)
         list(APPEND _adofai_install_targets adofai_audio)
@@ -260,6 +269,12 @@ if(ADOFAI_LIB_INSTALL)
     if(ADOFAI_LIB_ENABLE_ARCHIVE)
         install(DIRECTORY "${ADOFAI_LIB_SRC_ROOT}/archive/"
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/archive
+            FILES_MATCHING PATTERN "*.hpp")
+    endif()
+    if(ADOFAI_LIB_ENABLE_EXPORT)
+        # 库自有的导出模块（没有上游对应物，见 MIRROR.md）。
+        install(DIRECTORY "${ADOFAI_LIB_SRC_ROOT}/export/"
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/export
             FILES_MATCHING PATTERN "*.hpp")
     endif()
     if(ADOFAI_LIB_ENABLE_AUDIO)
@@ -308,6 +323,7 @@ if(ADOFAI_LIB_INSTALL)
 endif()
 
 message(STATUS "ADOFAI.Lib ${PROJECT_VERSION}: core=ON archive=${ADOFAI_LIB_ARCHIVE} "
+               "export=${ADOFAI_LIB_EXPORT} "
                "audio=${ADOFAI_LIB_AUDIO} audio_device=${ADOFAI_LIB_AUDIO_DEVICE} "
                "render=${ADOFAI_LIB_RENDER} "
                "asset_zip=${ADOFAI_LIB_ASSET_ZIP} bundle_deps=${ADOFAI_LIB_BUNDLE_DEPS}")

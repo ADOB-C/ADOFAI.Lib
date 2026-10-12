@@ -46,22 +46,10 @@ target_link_libraries(adofai_archive PUBLIC adofai_core)
 # 写进 $<BUILD_INTERFACE:>：liblzma / libzstd_static 是构建树里的 target，不属于本库的
 # 导出集（带进 install(EXPORT) 会让消费者拿到解析不了的名字）；PRIVATE 的链接项本来也不会
 # 被导出，所以装出去之后消费者既不需要它们、也不该去找它们。
-if(ADOFAI_LIB_BUNDLE_DEPS)
-    target_link_libraries(adofai_archive PRIVATE
-        "$<BUILD_INTERFACE:liblzma>" "$<BUILD_INTERFACE:libzstd_static>")
-    target_compile_definitions(adofai_archive PUBLIC ADOFAI_LIB_BUNDLE_DEPS=1)
-else()
-    find_package(LibLZMA REQUIRED)
-    find_package(zstd REQUIRED)
-    target_link_libraries(adofai_archive PRIVATE "$<BUILD_INTERFACE:LibLZMA::LibLZMA>")
-    if(TARGET zstd::libzstd_static)
-        target_link_libraries(adofai_archive PRIVATE "$<BUILD_INTERFACE:zstd::libzstd_static>")
-    elseif(TARGET zstd::libzstd_shared)
-        target_link_libraries(adofai_archive PRIVATE "$<BUILD_INTERFACE:zstd::libzstd_shared>")
-    else()
-        target_link_libraries(adofai_archive PRIVATE "$<BUILD_INTERFACE:zstd::libzstd>")
-    endif()
-endif()
+#
+# 接线本体在 cmake/ADOFAICompression.cmake —— ADOFAI::export 也要链同一份（静态库不传递依赖），
+# 两条分支抄两遍必然漂移。
+adofai_link_compression(adofai_archive)
 
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_compile_options(adofai_archive PRIVATE -O3 -march=native -fomit-frame-pointer)

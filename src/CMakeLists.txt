@@ -21,3 +21,10 @@ if(ADOFAI_LIB_ENABLE_RENDER)
     add_subdirectory(adofai/glad)
     add_subdirectory(adofai/render)
 endif()
+
+# export（写入方）：在 core 之后，而且必须在 archive 之后（它 PUBLIC 依赖 archive ——
+# 压缩库与 `.adocao` 打包器都在那一格里）。
+# 这是**库自有**的模块，不在镜像白名单里（ADOCAO 刻意不做导出），见 MIRROR.md。
+if(ADOFAI_LIB_ENABLE_EXPORT)
+    add_subdirectory(adofai/export)
+endif()

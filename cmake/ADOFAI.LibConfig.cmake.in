@@ -5,15 +5,17 @@
 #   find_package(ADOFAI.Lib CONFIG REQUIRED)
 #   target_link_libraries(app PRIVATE ADOFAI::core)
 #
-# 模块：ADOFAI::core，以及 ADOFAI_LIB_ARCHIVE=ON 时的 ADOFAI::archive
-# （音频 P4、渲染 P5 尚未搬过来）。
+# 模块：ADOFAI::core；ADOFAI_LIB_ARCHIVE=ON 时的 ADOFAI::archive；
+# ADOFAI_LIB_EXPORT=ON 时的 ADOFAI::export（写 .adofai / .adofai.xz / .adofai.zst / .adocao）；
+# 音频与渲染也都在（见 README 的用法表）。
 
 include(CMakeFindDependencyMacro)
 
-# 这个选项在本库配置时就被 @ADOFAI_LIB_RENDER@ 替换成 ON/OFF —— 装出去的包记得住自己是
-# 怎么编的，消费者不用再猜。
+# 这些选项在本库配置时就被 @...@ 替换成 ON/OFF —— 装出去的包记得住自己是怎么编的，
+# 消费者不用再猜。
 set(ADOFAI_LIB_RENDER_ENABLED @ADOFAI_LIB_RENDER@)
 set(ADOFAI_LIB_ARCHIVE_ENABLED @ADOFAI_LIB_ARCHIVE@)
+set(ADOFAI_LIB_EXPORT_ENABLED @ADOFAI_LIB_EXPORT@)
 set(ADOFAI_LIB_BUNDLE_DEPS @ADOFAI_LIB_BUNDLE_DEPS@)
 
 # 公共依赖（出现在装出去的公共头里）：
