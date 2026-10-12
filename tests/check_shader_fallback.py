@@ -24,6 +24,8 @@ CHECKS = [
     ("kPlanetFragSrc", "planet.frag"),
     ("kTrailVertSrc", "trail.vert"),
     ("kTrailFragSrc", "trail.frag"),
+    # 注：icon.vert / icon.frag 已被上游删除（图标并入 tile.vert 的几何展开），
+    # 所以这里也不再校验它们。
 ]
 
 

@@ -42,6 +42,7 @@ TileMesh::TileMesh(TileMesh&& o) noexcept
       m_shapeTex(o.m_shapeTex), m_instCapacity(o.m_instCapacity), m_shapeRows(o.m_shapeRows),
       m_shapes(std::move(o.m_shapes)), m_tileShape(std::move(o.m_tileShape)),
       m_posX(std::move(o.m_posX)), m_posY(std::move(o.m_posY)),
+      m_chunkX(std::move(o.m_chunkX)), m_chunkY(std::move(o.m_chunkY)),
       m_iconBits(std::move(o.m_iconBits)), m_visible(std::move(o.m_visible)),
       m_drawOrder(std::move(o.m_drawOrder)), m_nTiles(o.m_nTiles) {
     std::memcpy(m_fill, o.m_fill, sizeof m_fill);
@@ -58,6 +59,7 @@ TileMesh& TileMesh::operator=(TileMesh&& o) noexcept {
         m_instCapacity = o.m_instCapacity; m_shapeRows = o.m_shapeRows;
         m_shapes = std::move(o.m_shapes); m_tileShape = std::move(o.m_tileShape);
         m_posX = std::move(o.m_posX); m_posY = std::move(o.m_posY);
+        m_chunkX = std::move(o.m_chunkX); m_chunkY = std::move(o.m_chunkY);
         m_iconBits = std::move(o.m_iconBits); m_visible = std::move(o.m_visible);
         m_drawOrder = std::move(o.m_drawOrder); m_nTiles = o.m_nTiles;
         std::memcpy(m_fill, o.m_fill, sizeof m_fill);
@@ -81,6 +83,7 @@ void TileMesh::destroyStaticGL() {
 void TileMesh::destroy() {
     destroyStaticGL();
     m_shapes.clear(); m_tileShape.clear(); m_posX.clear(); m_posY.clear();
+    m_chunkX.clear(); m_chunkY.clear();
     m_iconBits.clear(); m_visible.clear(); m_drawOrder.clear();
     m_listTiles.clear(); m_listAttr.clear();
     m_listValid = false;
@@ -140,6 +143,15 @@ void TileMesh::build(const LevelData& level, const std::string& fillColorHex,
     m_shapes.reserve(shapeGroups.size());
     m_tileShape.assign((size_t)n, 0);
     m_posX.assign((size_t)n, 0.0f); m_posY.assign((size_t)n, 0.0f);
+    // 每块一个 double 原点（取块内第一块砖的位置）—— 块内偏移用 float 才不丢精度（见 .hpp）
+    const size_t chunkSize = (size_t)1 << kPosChunkShift;
+    const size_t nChunks = ((size_t)n + chunkSize - 1) / chunkSize;
+    m_chunkX.assign(nChunks, 0.0); m_chunkY.assign(nChunks, 0.0);
+    for (size_t c = 0; c < nChunks; c++) {
+        const size_t i0 = c * chunkSize;
+        m_chunkX[c] = tiles[i0].position[0];
+        m_chunkY[c] = tiles[i0].position[1];
+    }
     m_iconBits.assign((size_t)n, 0);
     m_drawOrder.clear(); m_drawOrder.reserve((size_t)n);
 
@@ -151,8 +163,9 @@ void TileMesh::build(const LevelData& level, const std::string& fillColorHex,
         m_shapes.push_back(TileShape::buildShape(key.sa / 100.0f, key.ea / 100.0f, key.mid));
         for (int i : tileIndices) {
             m_tileShape[(size_t)i] = shapeIdx;
-            m_posX[(size_t)i] = (float)tiles[(size_t)i].position[0];
-            m_posY[(size_t)i] = (float)tiles[(size_t)i].position[1];
+            const size_t ti = (size_t)i, c = ti >> kPosChunkShift;
+            m_posX[ti] = (float)(tiles[ti].position[0] - m_chunkX[c]);
+            m_posY[ti] = (float)(tiles[ti].position[1] - m_chunkY[c]);
             m_drawOrder.push_back((uint32_t)i);
         }
     }
@@ -249,10 +262,10 @@ void TileMesh::cullRange(size_t begin, size_t end, double vl, double vr, double 
         for (size_t b = 0; b < W; b++) {
             uint32_t t = m_drawOrder[i + b];
             const Shape& sh = m_shapes[m_tileShape[t]];
-            sMinX[b] = sh.localMinX + (double)m_posX[t];
-            sMaxX[b] = sh.localMaxX + (double)m_posX[t];
-            sMinY[b] = sh.localMinY + (double)m_posY[t];
-            sMaxY[b] = sh.localMaxY + (double)m_posY[t];
+            sMinX[b] = sh.localMinX + tileX(t);
+            sMaxX[b] = sh.localMaxX + tileX(t);
+            sMinY[b] = sh.localMinY + tileY(t);
+            sMaxY[b] = sh.localMaxY + tileY(t);
         }
         int mask = CullSIMD::test4(sMinX, sMaxX, sMinY, sMaxY, vl, vr, vb, vt);
         for (size_t b = 0; b < W; b++) {
@@ -260,31 +273,35 @@ void TileMesh::cullRange(size_t begin, size_t end, double vl, double vr, double 
             uint32_t t = m_drawOrder[i + b];
             if (haveVis && !m_visible[t]) continue;
             outTiles.push_back(t);
-            pushAttr(outAttr, m_posX[t] - (float)camX, m_posY[t] - (float)camY,
+            // 相机相对偏移在 **double** 里算完再窄化一次：分开窄化（pos 与 cam 各自 cast）会
+            // 在超大坐标上把两者的舍入误差叠加成半个格子（primer 上就是好几块砖）
+            pushAttr(outAttr, (float)(tileX(t) - camX), (float)(tileY(t) - camY),
                      tileZForIndex((int)t, m_nTiles), m_tileShape[t], m_iconBits[t]);
         }
     }
     for (; i < end; i++) {
         uint32_t t = m_drawOrder[i];
         const Shape& sh = m_shapes[m_tileShape[t]];
-        double mnX = sh.localMinX + (double)m_posX[t], mxX = sh.localMaxX + (double)m_posX[t];
-        double mnY = sh.localMinY + (double)m_posY[t], mxY = sh.localMaxY + (double)m_posY[t];
+        double mnX = sh.localMinX + tileX(t), mxX = sh.localMaxX + tileX(t);
+        double mnY = sh.localMinY + tileY(t), mxY = sh.localMaxY + tileY(t);
         if (mxX < vl || mnX > vr || mxY < vb || mnY > vt) continue;
         if (haveVis && !m_visible[t]) continue;
         outTiles.push_back(t);
-        pushAttr(outAttr, m_posX[t] - (float)camX, m_posY[t] - (float)camY,
+        pushAttr(outAttr, (float)(tileX(t) - camX), (float)(tileY(t) - camY),
                  tileZForIndex((int)t, m_nTiles), m_tileShape[t], m_iconBits[t]);
     }
 }
 
-void TileMesh::ensureDrawList(float viewL, float viewR, float viewB, float viewT,
+void TileMesh::ensureDrawList(double viewL, double viewR, double viewB, double viewT,
                               double camX, double camY) const {
     const double m = 20.0;   // 与改造前同一个视锥外扩
     const double vl = viewL - m, vr = viewR + m, vb = viewB - m, vt = viewT + m;
+    // 一律 double 比：float 在 x≈6.8e7 上 ulp 就是 8，`> 0.5f` 会退化成"只要变了就重建"
+    // （虽然结果碰巧对，但边界与被比较的量都该是 double —— 见 docs/rendering.md 坐标约定）
     const bool frustumChanged =
-        !m_listValid || std::abs((float)m_vl - viewL) > 0.5f ||
-        std::abs((float)m_vr - viewR) > 0.5f || std::abs((float)m_vb - viewB) > 0.5f ||
-        std::abs((float)m_vt - viewT) > 0.5f;
+        !m_listValid || std::abs(m_vl - viewL) > 0.5 ||
+        std::abs(m_vr - viewR) > 0.5 || std::abs(m_vb - viewB) > 0.5 ||
+        std::abs(m_vt - viewT) > 0.5;
     if (frustumChanged) {
         m_listTiles.clear();
         m_listAttr.clear();
@@ -311,6 +328,27 @@ void TileMesh::ensureDrawList(float viewL, float viewR, float viewB, float viewT
             }
         } else {
             cullRange(0, n, vl, vr, vb, vt, camX, camY, m_listTiles, m_listAttr);
+        }
+
+        // 窗口相对 Z（2026-10，用户指出）：全局归一化 `kMaxTileZ*(1-i/(n-1))` 的每层间距是
+        // 9/(n-1) —— MYC 677 万层只有 **1.33e-6**，而 24 bit 深度在正交 0.1→200 上的分辨率是
+        // **1.19e-5**：间距只有分辨率的 1/9，于是"相邻砖在深度上等于同一个值"，谁盖谁由
+        // m_drawOrder（unordered_map 迭代序 + 组内降序）决定，**而不是层号** —— 屏幕只画 3 块砖
+        // 也一样（Z 只看全局层号与总层数）。现在改成按**本次可见窗口** [i0,i1] 归一化：可见几百砖
+        // 时每层间距 0.01~0.05（分辨率的 1000 倍），深度测试真正生效、前后由层号决定。
+        // 只在重建列表时算（平移分支不碰 Z），且不增加任何上传 —— offZ 本来就每帧上传。
+        if (!m_listTiles.empty()) {
+            int i0 = (int)m_listTiles[0], i1 = i0;
+            for (uint32_t t : m_listTiles) {
+                const int v = (int)t;
+                if (v < i0) i0 = v;
+                if (v > i1) i1 = v;
+            }
+            const float span = (i1 > i0) ? (float)(i1 - i0) : 1.0f;
+            for (size_t k = 0; k < m_listTiles.size(); k++) {
+                const float u = (float)((int)m_listTiles[k] - i0) / span;   // 0 = 窗口内最早（最近）
+                m_listAttr[k * 5 + 2] = kMaxTileZ * (1.0f - u);
+            }
         }
         m_vl = viewL; m_vr = viewR; m_vb = viewB; m_vt = viewT;
         m_listValid = true;
@@ -343,7 +381,7 @@ void TileMesh::uploadIfNeeded() const {
     m_listUploaded = true;
 }
 
-void TileMesh::draw(float viewL, float viewR, float viewB, float viewT,
+void TileMesh::draw(double viewL, double viewR, double viewB, double viewT,
                     double camX, double camY) const {
     m_lastDrawn = 0;
     if (empty() || !m_vao) return;
@@ -365,8 +403,8 @@ void TileMesh::draw(float viewL, float viewR, float viewB, float viewT,
 void TileMesh::drawHighlightedTile(int ti, double cX, double cY) const {
     if (ti < 0 || ti >= m_nTiles || !m_vao) return;
     float attr[5];
-    attr[0] = m_posX[(size_t)ti] - (float)cX;
-    attr[1] = m_posY[(size_t)ti] - (float)cY;
+    attr[0] = (float)(tileX((size_t)ti) - cX);
+    attr[1] = (float)(tileY((size_t)ti) - cY);
     attr[2] = tileZForIndex(ti, m_nTiles);
     attr[3] = (float)m_tileShape[(size_t)ti];
     attr[4] = (float)m_iconBits[(size_t)ti];

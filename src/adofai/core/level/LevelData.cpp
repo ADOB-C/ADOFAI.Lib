@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdio>
 #include <iterator>
+#include "core/util/CountLimits.hpp"
 
 
 // ===========================================================================
@@ -203,6 +204,16 @@ inline bool parseInt(const char*& p, const char* e, int& out) {
     int64_t v = 0;
     while (p < e && *p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); ++p; }
     if (p < e && (*p == '.' || *p == 'e' || *p == 'E')) { p = start; return false; }
+    // 2^31−1 层目标 #0 的契约：**绝不静默截断**。以前这里直接 `out = (int)v`，
+    // 于是 parseInt("2147483648") 得到 −2147483648，接着被 floor>=0 && floor<n 的守卫
+    // **无声丢掉**（没有日志）。今天 tiles 还是 32 位索引、这个谱确实装不下，
+    // 所以先做到"放弃快路径 + 喊出来"；阶段 2 把计数改成 int64 后这条会自然消失。
+    if (v > (int64_t)(neg ? 2147483648LL : 2147483647LL)) {
+        LOG_E("parseInt: 整数超出 int32 范围（'%.*s'）—— 放弃快路径，不截断",
+              (int)(p - start), start);
+        p = start;
+        return false;
+    }
     out = (int)(neg ? -v : v);
     return true;
 }
@@ -1405,7 +1416,13 @@ void LevelData::calculateTilePositions() {
     tiles.clear();
     if (angleData.empty()) return;
 
-    int n = static_cast<int>(angleData.size());
+    const int64_t nFull = (int64_t)angleData.size();
+    if (!fitsInt32(nFull)) {
+        LOG_E("calculateTilePositions 需要 64 位索引（2^31−1 目标 #0 阶段 3）：%lld 层超出 int32",
+              (long long)nFull);
+        return;
+    }
+    const int n = (int)nFull;
 
     // Build "floats" array: 999 = midspin (previous + 180)
     std::vector<float> floats(n);
@@ -1495,7 +1512,14 @@ float LevelData::pathCharToAngle(char c) {
 }
 
 void LevelData::processActions() {
-    int n = (int)angleData.size() + 1;  // +1 for tile 0 (tiles may be empty in export mode)
+    // +1 是第 0 层那一格；用 int64 算，避免 2^31−1 时 `+1` 有符号溢出（UBSan 报过）。
+    const int64_t nFull = countFromAngleCount((int64_t)angleData.size());
+    if (!fitsInt32(nFull)) {
+        LOG_E("processActions 需要 64 位索引（2^31−1 目标 #0 阶段 3）：%lld 层超出 int32",
+              (long long)nFull);
+        return;
+    }
+    const int n = (int)nFull;
     tileBPMs.assign(n, settings.bpm);
     tileHasTwirl.assign(n, false);
     tileHasSetSpeed.assign(n, false);
@@ -1593,20 +1617,40 @@ void LevelData::applyPositionTrackOffsets() {
     if (tilePositionOffsets.empty()) return;
 
     double cumX = 0.0, cumY = 0.0;
-    int n = (int)tiles.size();
+    const int64_t nFull = (int64_t)tiles.size();
+    if (!fitsInt32(nFull)) {
+        LOG_E("applyPositionTrackOffsets 需要 64 位索引（#0 阶段 3）：%lld 层超出 int32",
+              (long long)nFull);
+        return;
+    }
+    const int n = (int)nFull;
 
     std::vector<std::pair<int, TilePositionOffset>> sorted(tilePositionOffsets.begin(), tilePositionOffsets.end());
     std::sort(sorted.begin(), sorted.end(), [](auto& a, auto& b) { return a.first < b.first; });
     size_t oi = 0;
 
+    // justThisTile 的语义 = **只作用于本层**（点加），三份来源一致：
+    //   * 编辑器指南（adofaieditor.gitbook.io → Position Track → "Only change this tile"）：
+    //     "If enabled, all settings from this event will only affect the event tile"；
+    //   * Re_ADOJAS 的移植（src/lib/Player/PositionTrackManager.ts）：justThisTile → pointX[floor] += …
+    //     （非 justThisTile 才是 bitAdd 后缀加）；
+    //   * 它在 The Moon 那段上的渲染量出来也对得上：花瓣环离星心 1.5~2.2 倍星半径，
+    //     正好落在点加模型的预测内（点加中位 1.46 / 最大 2.28），而"一律累积"会把花瓣甩到 3~5 倍外。
+    // 非 justThisTile（缺省/"Disabled"）= 后缀加：本层及之后所有层都吃到（累进 cumX/cumY）。
+    // 注：官方的 `vector`（累积偏移）只用于 relativeTo，我们还没实现 relativeTo。
     for (int i = 0; i < n; i++) {
+        double px = 0.0, py = 0.0;       // 本层的"一次性"偏移（同层多个事件累加）
         while (oi < sorted.size() && sorted[oi].first == i) {
-            cumX += sorted[oi].second.offsetX;
-            cumY += sorted[oi].second.offsetY;
+            const TilePositionOffset& o = sorted[oi].second;
+            if (o.justThisTile) {
+                px += o.offsetX; py += o.offsetY;
+            } else {
+                cumX += o.offsetX; cumY += o.offsetY;
+            }
             oi++;
         }
-        tiles[i].position[0] += cumX;
-        tiles[i].position[1] += cumY;
+        tiles[i].position[0] += cumX + px;
+        tiles[i].position[1] += cumY + py;
     }
 }
 

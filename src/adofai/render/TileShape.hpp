@@ -11,7 +11,7 @@
 //   * **形状表**：每个形状只存 6×2 条 8 float 的 part 记录（参数），VS 按 part 公式展开。
 //     于是每帧 draw 从"每形状一次"变成 1 次，形状数不再决定 draw 次数。
 //
-// 位精确（本任务真正的风险，见 AGENTS.md）：VS 里**没有**超越函数 —— cos/sin/pow/fmod 的结果
+// 位精确（本任务真正的风险，见 `docs/rendering.md`；2026-10 从 AGENTS.md 拆出）：VS 里**没有**超越函数 —— cos/sin/pow/fmod 的结果
 // 都由这里在 CPU 上算好放进记录；VS 只做与参考实现**逐字同结构**的乘加，融合步用显式 `fma()`
 // 镜像编译器的 `fmadd/fmsub/fnmul`，需要单独舍入的乘积写成 `fma(a,b,0)`（= 正确舍入的乘积）。
 //
@@ -64,7 +64,8 @@ constexpr int kFlagTexel = kTexelsPerShape - 1;
 // 图标（`TileMesh.cpp` 的 IR / IS / 三种颜色）
 constexpr float kIconRadius = 0.11f;
 constexpr int   kIconSegments = 16;
-constexpr float kIconZBase = 0.002f, kIconZExtra = 0.003f;
+// 图标**不再抬高**：与砖共面，谁盖谁由索引表顺序决定（见 assets/shaders/tile.vert 的注释）。
+// （原来这里有两个常量 0.002/0.003，但全仓库无人使用 —— 真正的 z 在 tile.vert 里算。）
 constexpr float kTwirlColor[3] = {0.502f, 0.0f, 0.502f};
 constexpr float kSSUpColor[3]  = {1.0f, 0.0f, 0.0f};
 constexpr float kSSDownColor[3]= {0.0f, 0.0f, 1.0f};

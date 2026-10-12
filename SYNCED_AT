@@ -5,10 +5,15 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=71cf1f2
-ADOCAO_COMMIT_FULL=71cf1f2c34758b894bd0f83215d098a3ad4d32ad
-ADOCAO_COMMIT_DATE=2026-10-07
-# 本次跨了一大段：上游加了 **`.adocao` 二进制容器（v2 列编码器）** ——
+ADOCAO_COMMIT=ad09d05
+ADOCAO_COMMIT_FULL=ad09d056e9dc8dbdf45a95f5c72f6aa625aac294
+ADOCAO_COMMIT_DATE=2026-10-11
+# 本次同步要点：新增 archive/AdocaoDiagnostics（v3 判据统计）、core/util/CountLimits.hpp、
+# 12 张 diag 谱 + 5 个新用例（adocao_diagnostics / limits / position_offset / raw_pcm / hz_grid）；
+# **并处理了删除** —— 上游删掉了 assets/shaders/icon.{frag,vert}（图标并入 tile.vert 的几何展开），
+# 所以镜像侧也要删（`rsync --delete`），这是以往同步流程没覆盖过的情况。
+#
+# 上一次跨了一大段：上游加了 **`.adocao` 二进制容器（v2 列编码器）** ——
 #   archive/{AdocaoFormat.hpp,AdocaoColumns.{hpp,cpp},AdocaoWriter.{hpp,cpp},AdocaoReader.{hpp,cpp}}
 #   以及 tests/adocao_columns_test.cpp；core 侧配套改了 level/timeline 共 9 个文件
 #   （含快路径吃下非整数 action 字段的修复）。库侧把新源文件加进 archive target、

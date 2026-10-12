@@ -16,7 +16,9 @@ add_library(adofai_archive STATIC
     # `.adocao` 写入方（pack）：依赖 core 的 LevelData（archive → core 是允许的方向）
     AdocaoWriter.cpp
     # `.adocao` 读取方（unpack）：填 LevelData 但不做收尾（收尾与两条 JSON 路径共用）
-    AdocaoReader.cpp)
+    AdocaoReader.cpp
+    # v3 判据统计（哨兵掩码 + 差分基数），给 pack 的编码选择当依据
+    AdocaoDiagnostics.cpp)
 
 # 写入方会把"生成这份文件的源码来自哪个 commit"写进文件头做溯源（读取方根本不看它，
 # 它只作排查/可复现断言）。上游那边取的是 `git rev-parse HEAD`，但**库这边的 HEAD 是库自己的

@@ -126,6 +126,49 @@ add_executable(adofai_fast_path_test check_fast_path.cpp)
 target_link_libraries(adofai_fast_path_test PRIVATE ADOFAI::core)
 add_test(NAME fast_path_noninteger COMMAND adofai_fast_path_test)
 
+# ── 从上游镜像来的其它用例 ──────────────────────────────────────────────────
+# 只挂**不依赖本体 app / 资产**的那些；依赖 assets/hitsounds 或 serve 当 dump 工具的
+# （kick_chord / timeline_ab_dump / tl_*）库里没有对应物，见文件末尾的说明。
+
+# `.adocao` v3 判据统计：哨兵掩码 + 差分基数（负向对照是重点）。只链 archive。
+if(ADOFAI_LIB_ENABLE_ARCHIVE)
+    add_executable(adofai_adocao_diagnostics_test adocao_diagnostics_test.cpp)
+    target_link_libraries(adofai_adocao_diagnostics_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_diagnostics COMMAND adofai_adocao_diagnostics_test)
+endif()
+
+# 解析/加载的各种上限（core 的 CountLimits）
+add_executable(adofai_limits_test limits_test.cpp)
+target_link_libraries(adofai_limits_test PRIVATE ADOFAI::core)
+add_test(NAME limits COMMAND adofai_limits_test)
+
+# PositionTrack 的 justThisTile 消费侧语义（点加 vs 后缀加 + 负向对照）
+add_executable(adofai_position_offset_test position_offset_test.cpp)
+target_link_libraries(adofai_position_offset_test PRIVATE ADOFAI::core)
+add_test(NAME position_offset COMMAND adofai_position_offset_test)
+
+# audio-as-chart（raw-PCM 直通）与"自然弯曲"赫兹谱：都要 audio
+if(ADOFAI_LIB_ENABLE_AUDIO AND ADOFAI_LIB_ENABLE_ARCHIVE)
+    # 这两个用例会把 WAV 写到 CMAKE_CURRENT_BINARY_DIR/diag/ 供人耳复核。ctest 在
+    # build/tests 下跑（上游从源码根跑，所以那边有 build/diag），目录得先建出来。
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/diag")
+
+    add_executable(adofai_raw_pcm_test raw_pcm_test.cpp)
+    target_link_libraries(adofai_raw_pcm_test PRIVATE ADOFAI::archive ADOFAI::audio)
+    add_test(NAME raw_pcm
+        COMMAND adofai_raw_pcm_test
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_wav_rate.adofai"
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_dict.adofai"
+                "${CMAKE_CURRENT_BINARY_DIR}/diag/wav_rate.wav")
+
+    add_executable(adofai_hz_grid_test hz_grid_test.cpp)
+    target_link_libraries(adofai_hz_grid_test PRIVATE ADOFAI::archive ADOFAI::audio)
+    add_test(NAME hz_grid
+        COMMAND adofai_hz_grid_test
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_arpeggio.adofai"
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_duet.adofai")
+endif()
+
 # ── headless 示例的三条 ───────────────────────────────────────────────────
 
 # 先按测试的方式把 WAV 生成出来（也保证例子在任何构建里被真的跑过一次）。

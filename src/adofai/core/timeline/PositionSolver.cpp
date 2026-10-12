@@ -4,13 +4,20 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include "core/util/CountLimits.hpp"
+#include "core/util/Logger.hpp"
 
 
 namespace adofai {
 
 void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& redOut, glm::dvec2& blueOut) {
     const auto& tiles = timeline.level()->tiles;
-    int n = (int)tiles.size();
+    const int64_t nFull = (int64_t)tiles.size();   // #0：int64 算，收窄前显式判
+    if (!fitsInt32(nFull)) {
+        LOG_E("PositionSolver 需要 64 位索引（#0 阶段 3）：%lld 层超出 int32", (long long)nFull);
+        return;
+    }
+    const int n = (int)nFull;
     if (n < 2) return;
     int tileIdx = timeline.findTileIndex(t);
 
@@ -51,10 +58,10 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
     bool isRed = (tileIdx%2==0);
     const auto& pivotPos = tiles[tileIdx].position;
     double startTime = timeline.tileStartTimes()[tileIdx];
-    double duration = timeline.tileDurations()[tileIdx];
+    double duration = timeline.durationAt(tileIdx);
     double progress = (duration>0.0001)?(t-startTime)/duration:1.0;
     if (progress<0) progress=0; if (progress>1) progress=1;
-    double angle = (double)timeline.tileStartAngles()[tileIdx]+(double)timeline.tileTotalAngles()[tileIdx]*progress;
+    double angle = (double)timeline.startAngleAt(tileIdx)+(double)timeline.totalAngleAt(tileIdx)*progress;
     double dist = (double)timeline.tileStartDist(tileIdx)+((double)timeline.tileEndDist(tileIdx)-(double)timeline.tileStartDist(tileIdx))*progress;
     glm::dvec2 pv(pivotPos[0],pivotPos[1]);
     glm::dvec2 mv(pivotPos[0]+std::cos(angle)*dist, pivotPos[1]+std::sin(angle)*dist);
@@ -64,7 +71,12 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
 
 void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tileIdx, glm::dvec2& redOut, glm::dvec2& blueOut) {
     const auto& tiles = timeline.level()->tiles;
-    int n = (int)tiles.size();
+    const int64_t nFull = (int64_t)tiles.size();   // #0：int64 算，收窄前显式判
+    if (!fitsInt32(nFull)) {
+        LOG_E("PositionSolver 需要 64 位索引（#0 阶段 3）：%lld 层超出 int32", (long long)nFull);
+        return;
+    }
+    const int n = (int)nFull;
     if (n < 2) return;
     if (t < timeline.tileStartTimes()[0]) {
         const auto& p0 = tiles[0].position;
@@ -98,10 +110,10 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
     bool isRed = (tileIdx%2==0);
     const auto& pivotPos = tiles[tileIdx].position;
     double startTime = timeline.tileStartTimes()[tileIdx];
-    double duration = timeline.tileDurations()[tileIdx];
+    double duration = timeline.durationAt(tileIdx);
     double progress = (duration>0.0001)?(t-startTime)/duration:1.0;
     if (progress<0) progress=0; if (progress>1) progress=1;
-    double angle = (double)timeline.tileStartAngles()[tileIdx]+(double)timeline.tileTotalAngles()[tileIdx]*progress;
+    double angle = (double)timeline.startAngleAt(tileIdx)+(double)timeline.totalAngleAt(tileIdx)*progress;
     double dist = (double)timeline.tileStartDist(tileIdx)+((double)timeline.tileEndDist(tileIdx)-(double)timeline.tileStartDist(tileIdx))*progress;
     glm::dvec2 pv(pivotPos[0],pivotPos[1]);
     glm::dvec2 mv(pivotPos[0]+std::cos(angle)*dist, pivotPos[1]+std::sin(angle)*dist);
@@ -110,12 +122,11 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
 }
 
 double PositionSolver::tilePathSpeed(const Timeline& timeline, double t) {
-    const auto& durations = timeline.tileDurations();
-    if (durations.empty()) return 0.0;
+    if (timeline.tileStartTimes().empty()) return 0.0;
     int idx = timeline.findTileIndex(t);
     if (idx < 0) idx = 0;
-    if (idx >= (int)durations.size()) idx = (int)durations.size() - 1;
-    const double d = durations[idx];
+    if (idx >= (int)timeline.tileStartTimes().size()) idx = (int)timeline.tileStartTimes().size() - 1;
+    const double d = timeline.durationAt(idx);
     if (d <= 1e-9) return 0.0;
 
     // Track covered by one tile: at least the step to the next tile centre, plus
@@ -123,7 +134,7 @@ double PositionSolver::tilePathSpeed(const Timeline& timeline, double t) {
     // the planet travel a long arc while barely advancing). Sampling has to
     // follow that arc, otherwise slow sharp turns come out as chunky polylines.
     const double step = 1.0;
-    const double rot  = std::abs((double)timeline.tileTotalAngles()[idx]);
+    const double rot  = std::abs((double)timeline.totalAngleAt(idx));
     const double radius = std::max((double)timeline.tileStartDist(idx),
                                    (double)timeline.tileEndDist(idx));
     const double arc = rot * std::max(0.5, radius);
@@ -141,7 +152,6 @@ PositionSolver::TrailWindow PositionSolver::trailWindow(const Timeline& timeline
     double start = t - (double)cfg.duration;
     if (cfg.lengthInTiles) {
         const auto& startTimes = timeline.tileStartTimes();
-        const auto& durations  = timeline.tileDurations();
         int i = timeline.findTileIndex(t);
         if (i < 0) i = 0;
         if (i >= (int)startTimes.size()) i = (int)startTimes.size() - 1;
@@ -152,8 +162,8 @@ PositionSolver::TrailWindow PositionSolver::trailWindow(const Timeline& timeline
         const double frac = back - (double)whole;
         i = std::max(0, i - whole);
         start = startTimes[i];
-        if (frac > 1e-6 && i > 0 && i - 1 < (int)durations.size())
-            start -= frac * (double)durations[i - 1];
+        if (frac > 1e-6 && i > 0 && i - 1 < (int)timeline.tileStartTimes().size())
+            start -= frac * (double)timeline.durationAt(i - 1);
     }
     if (start > t) start = t;
 
