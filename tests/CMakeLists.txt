@@ -169,6 +169,66 @@ if(ADOFAI_LIB_ENABLE_AUDIO AND ADOFAI_LIB_ENABLE_ARCHIVE)
                 "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_duet.adofai")
 endif()
 
+# ── 导出（**库自有**模块，不在镜像白名单里）────────────────────────────────
+# 这是导出模块的**漂移护栏**：它比的是 parse(原件) 与 parse(导出物) 的建模字段指纹，
+# 所以上游一旦给 LevelData 加字段而导出没跟上，这里立刻红（判据来自解析器，不是我另抄一份表）。
+# 详见 tests/export_roundtrip_test.cpp 顶部的说明。
+if(ADOFAI_LIB_ENABLE_EXPORT)
+    # 真实谱面（上游镜像进来的 diag_* / angles360 / shapes_exhaustive …）全都过一遍。
+    file(GLOB _adofai_export_charts CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/charts/*.adofai")
+
+    add_executable(adofai_export_roundtrip_test export_roundtrip_test.cpp)
+    target_link_libraries(adofai_export_roundtrip_test PRIVATE ADOFAI::export)
+    if(ADOFAI_LIB_ENABLE_ARCHIVE)
+        # `.adocao` 的 pack 逐字节对照要直接调 archive 的 packLevel。
+        target_compile_definitions(adofai_export_roundtrip_test PRIVATE
+            ADOFAI_EXPORT_TEST_HAVE_ARCHIVE=1)
+    endif()
+    add_test(NAME export_roundtrip
+        COMMAND adofai_export_roundtrip_test
+                "${CMAKE_CURRENT_BINARY_DIR}/export_out"
+                ${_adofai_export_charts}
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/smoke_level.adofai"
+                # 解析容错夹具里**本身就是合法 JSON** 的那些（其余是故意写坏的，喂给导出没有意义）
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f16_pathdata_only.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f18b_sci_neg_numbers.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f19_all_action_types.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f23_string_escapes.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f24_positiontrack_variants.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f25_setspeed_variants.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f27_whitespace_heavy.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f28_empty_arrays.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f29_minimal.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f38_hitsound_volume_dense.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_negative_hitsound_volume.json")
+
+    # 独立验收：Python 的 json / lzma（以及 zstd CLI）说了算，还有一份**另写的**建模投影。
+    # 输出目录与上面那条**刻意分开**：两条用例导出的文件名集合是重叠的（都是按夹具名派生），
+    # 共用目录在 `ctest -j` 下会互相踩。
+    if(Python3_Interpreter_FOUND AND TARGET adofai_headless)
+        if(ADOFAI_LIB_ARCHIVE)
+            set(_adofai_export_expect on)
+        else()
+            set(_adofai_export_expect off)
+        endif()
+        add_test(NAME export_independent
+            COMMAND ${Python3_EXECUTABLE}
+                    "${CMAKE_CURRENT_SOURCE_DIR}/check_export.py"
+                    "$<TARGET_FILE:adofai_headless>"
+                    "${CMAKE_CURRENT_BINARY_DIR}/export_out_py"
+                    "${_adofai_export_expect}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/data/smoke_level.adofai"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_dict.adofai"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_midspin.adofai"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f19_all_action_types.json"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f24_positiontrack_variants.json"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f25_setspeed_variants.json"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f38_hitsound_volume_dense.json"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_negative_hitsound_volume.json")
+    endif()
+endif()
+
 # ── headless 示例的三条 ───────────────────────────────────────────────────
 
 # 先按测试的方式把 WAV 生成出来（也保证例子在任何构建里被真的跑过一次）。

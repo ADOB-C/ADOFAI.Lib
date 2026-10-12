@@ -1,9 +1,14 @@
 // examples/headless —— 库的消费者验收程序（PLAN.md §6）。它只碰 ADOFAI::core（可选加
-// ADOFAI::archive / ADOFAI::audio），一行 GL 都没有：
-//   解析 .adofai（明文，或链了 archive 时的 .xz/.zst 容器）→ 建时间线 → 解算位置
-//   → 打拍音合成（链了 audio 且给了音色目录时）→ 导出 WAV。
+// ADOFAI::archive / ADOFAI::audio / ADOFAI::export），一行 GL 都没有：
+//   解析 .adofai（明文，或链了 archive 时的 .xz/.zst/.adocao 容器）→ 建时间线 → 解算位置
+//   → 打拍音合成（链了 audio 且给了音色目录时）→ 导出 WAV
+//   → 可选：把**加载到的谱**再导出成 .adofai / .adofai.xz / .adofai.zst / .adocao
 //
-//   headless <level.adofai> [out.wav] [hitsound_dir]
+//   headless <level.adofai> [out.wav] [hitsound_dir] [--export <out>]
+//
+// `--export` 的格式按**后缀**认（.adofai / .adofai.xz / .adofai.zst / .adocao，
+// 大小写不敏感）；认不出就报错，不猜。它也是"导出"这条路在库里的**端到端验收**：
+// check_export.py 用它产文件、再用 Python 的 lzma / json 独立验一遍。
 //
 // 打拍音那一段有两条路，看第三个参数：
 //   * 给了 hitsound_dir（含 Kick.wav / SnareAcoustic2.wav …）→ 用 ADOFAI::audio 的
@@ -30,6 +35,9 @@
 #endif
 #if defined(ADOFAI_HEADLESS_HAVE_AUDIO)
 #  include "audio/HitsoundManager.hpp"
+#endif
+#if defined(ADOFAI_HEADLESS_HAVE_EXPORT)
+#  include "export/LevelExport.hpp"
 #endif
 
 #include "core/level/LevelData.hpp"
@@ -98,13 +106,48 @@ bool writeClickTrackWav(const std::string& path,
 
 int main(int argc, char** argv)
 {
+    const char* kUsage =
+        "usage: %s <level.adofai> [out.wav] [hitsound_dir] [--export <out>]\n"
+        "  --export <out>   把加载到的谱导出成 <out>（按后缀认：.adofai / .adofai.xz /"
+        " .adofai.zst / .adocao）\n";
     if (argc < 2) {
-        std::fprintf(stderr, "usage: %s <level.adofai> [out.wav] [hitsound_dir]\n", argv[0]);
+        std::fprintf(stderr, kUsage, argv[0]);
         return 2;
     }
     const std::string levelPath = argv[1];
-    const std::string outWav    = (argc >= 3) ? argv[2] : std::string();
-    const std::string hitsDir   = (argc >= 4) ? argv[3] : std::string();
+
+    // 位置参数保持老样子（out.wav / hitsound_dir），选项放在后面任意位置 —— 现有的
+    // check_wav.py / check_archive.py / check_hitsound.py 都是按位置参数调的。
+    std::string exportPath;
+    std::vector<std::string> positional;
+    for (int i = 2; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--export") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "--export 后面要跟输出路径\n");
+                return 2;
+            }
+            exportPath = argv[++i];
+        } else if (a.rfind("--export=", 0) == 0) {
+            exportPath = a.substr(std::string("--export=").size());
+        } else if (a == "-h" || a == "--help") {
+            std::printf(kUsage, argv[0]);
+            return 0;
+        } else if (!a.empty() && a[0] == '-') {
+            std::fprintf(stderr, "未知参数：%s\n", a.c_str());
+            std::fprintf(stderr, kUsage, argv[0]);
+            return 2;
+        } else {
+            positional.push_back(a);
+        }
+    }
+    const std::string outWav  = positional.size() > 0 ? positional[0] : std::string();
+    const std::string hitsDir = positional.size() > 1 ? positional[1] : std::string();
+    if (positional.size() > 2) {
+        std::fprintf(stderr, "位置参数最多两个（out.wav / hitsound_dir），收到 %zu 个\n",
+                     positional.size());
+        return 2;
+    }
 
 #ifdef ADOFAI_HEADLESS_HAVE_ARCHIVE
     // 注册解压后端：之后 .adofai.xz / .adofai.zst 就能读了。
@@ -119,6 +162,29 @@ int main(int argc, char** argv)
     if (!level.loadFromFile(levelPath)) {
         std::fprintf(stderr, "load failed: %s\n", levelPath.c_str());
         return 1;
+    }
+
+    // 导出放在**加载之后、时间线之前**：它只需要 LevelData（角度 + 事件 + settings），
+    // 不需要时间线/位置 —— 这也正是 `.adocao`"只存输入"那条设计在调用顺序上的体现。
+    if (!exportPath.empty()) {
+#ifdef ADOFAI_HEADLESS_HAVE_EXPORT
+        adofai::exporter::Report rep;
+        std::string err;
+        if (!adofai::exporter::exportLevel(level, exportPath, err,
+                                           adofai::exporter::Options(), &rep)) {
+            std::fprintf(stderr, "export failed: %s\n", err.c_str());
+            return 1;
+        }
+        std::printf("exported       : %s (%s, %llu bytes", exportPath.c_str(),
+                    adofai::exporter::formatName(rep.format), (unsigned long long)rep.bytes);
+        if (rep.jsonBytes) std::printf(", json %llu", (unsigned long long)rep.jsonBytes);
+        if (rep.compressedBytes)
+            std::printf(", compressed %llu", (unsigned long long)rep.compressedBytes);
+        std::printf(")\n");
+#else
+        std::fprintf(stderr, "export failed: 本构建没链 ADOFAI::export（ADOFAI_LIB_EXPORT=OFF）\n");
+        return 1;
+#endif
     }
 
     Timeline timeline;
