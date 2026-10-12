@@ -4,9 +4,10 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 
 ```
 解析 .adofai  →  时间线 / 位置解算  →  打拍音（合成 / 导出）  →  可选：渲染砖块
+                                                              ↘  导出谱面（.adofai / .xz / .zst / .adocao）
 ```
 
-用于把 ADOFAI 的关卡逻辑嵌进你自己的程序 —— 播放器、分析工具、批量导出、编辑器……
+用于把 ADOFAI 的关卡逻辑嵌进你自己的程序 —— 播放器、分析工具、批量转换、编辑器……
 都不需要抄一遍解析器和时间线解算。
 
 - **语言 / 构建**：C++20，CMake ≥ 3.20
@@ -23,6 +24,8 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 - **时间线**：逐层起始时刻、时长、BPM 传播、中旋砖（`angleData = 999`）、SetSpeed/Twirl
 - **位置解算**：任意时刻的双星位置，与游戏里同一套解算
 - **打拍音**：合成 / 混音 / WAV 导出（忠实度对齐 `HitSoundGenerator`）
+- **导出谱面**：`.adofai`（明文 JSON）、`.adofai.xz`、`.adofai.zst`、`.adocao`
+  —— 四种格式一个入口，按后缀选；保真契约见下面的[导出谱面](#导出谱面)
 - **资产查找**：可配置搜索根 + 可选 zip；库本身零产品布局假设
 - **可选模块**：设备播放、砖块渲染都是独立 target，默认不引入它们的重依赖
 
@@ -32,13 +35,19 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 6/6
+ctest --test-dir build          # 默认 16/16
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
 
 ```bash
 ./build/examples/headless/adofai_headless <谱面.adofai> /tmp/out.wav [音色目录]
+```
+
+顺手把它转成别的容器（后缀决定格式）：
+
+```bash
+./build/examples/headless/adofai_headless <谱面.adofai> --export /tmp/out.adofai.xz
 ```
 
 ## 用法
@@ -52,7 +61,8 @@ cmake --install build --prefix /some/prefix
 ```cmake
 find_package(ADOFAI.Lib CONFIG REQUIRED)
 target_link_libraries(app PRIVATE ADOFAI::core)      # 只要解析 + 时间线
-# 或 ADOFAI::archive（加 .xz/.zst）、ADOFAI::audio（加打拍音）
+# 或 ADOFAI::archive（加 .xz/.zst/.adocao 读写）、ADOFAI::audio（加打拍音）、
+#    ADOFAI::export（加四种格式的写出）
 ```
 
 ### 解析 + 时间线 + 解算
@@ -99,12 +109,67 @@ hs.preSynthesize(timeline.getHitsoundTimestampGroups(), (float)timeline.totalDur
 hs.writeWav("out.wav");             // 也可以 buffer() 交给设备播放
 ```
 
+### 导出谱面
+
+链 `ADOFAI::export`（它自己会把 core 带进来；archive 开着的话也一起带上）：
+
+```cpp
+#include "export/LevelExport.hpp"
+
+adofai::exporter::Report rep;
+std::string err;
+if (!adofai::exporter::exportLevel(level, "out.adocao", err, adofai::exporter::Options(), &rep))
+    std::fprintf(stderr, "导出失败：%s\n", err.c_str());
+```
+
+格式按**后缀**认（大小写不敏感、长后缀优先）。不想依赖文件名就用显式重载
+`exportLevel(level, Format::AdofaiXz, path, err)`；只要字节不落盘用
+`writeTo(Format::Adocao, level, bytes, err)`；先问一句能不能写用 `formatAvailable(f)`。
+
+| 格式 | 内容 | 需要 |
+|---|---|---|
+| `.adofai` | 明文 JSON | 只要 `ADOFAI::export` |
+| `.adofai.xz` / `.adofai.zst` | 同一份 JSON 的整帧压缩（xz preset 6 / zstd level 19，zstd 帧**带内容校验和**）| 还要 `ADOFAI_LIB_ARCHIVE=ON`（压缩库在那一格里，库不重复拉一份）|
+| `.adocao` | 列式二进制容器（体积最小的那个）| 同上（打包器 `packLevel` 在 archive 里）|
+
+`ADOFAI_LIB_ARCHIVE=OFF` 时 `ADOFAI::export` 仍然在，但只出得了明文 `.adofai`；
+另三种格式会返回 `false` 并把原因写进 `err`（`formatAvailable()` 也能先问）。
+
+三条默认保证：
+
+- **写出来的一定读得回来** —— `Options::verify`（默认开）用完**各自的读取方**解回来比对：
+  `.adofai` 重新解析写出的 JSON 比建模指纹、`.xz`/`.zst` 解回来逐字节比源 JSON、
+  `.adocao` 解回来比建模指纹。不等就报错、**不落盘**。
+- **确定性** —— 同一份输入两次导出逐字节相同（单线程压缩、padding 写 0、字符串池顺序固定）；
+- **原子落盘** —— 先写 `<path>.tmp` 再改名，中途失败不会留半截文件冒充成品。
+
+#### 保真契约
+
+导出写的是**库建模的那些字段**，不是原文的逐字节回写：
+
+* settings 的 19 个字段、`angleData`、`pathData`、actions 的 6 列
+  （floor / eventType / speedType+bpmMultiplier 或 beatsPerMinute / positionOffset+justThisTile /
+  hitsound+hitsoundVolume / duration / trackDisappearAnimation、beatsBehind、beatsAhead、trackAnimation）
+  —— 这些**逐位往返**，由 `ctest export_roundtrip` 对全部夹具 × 四种格式断言；
+* **未知 `eventType` 的 action 会没有** —— 两条解析路径在**读入时**就丢弃它们，不是导出丢的；
+* 未建模的 settings 键、`decorations`、注释、键序、数字字面量的写法（`1e2` 与 `100`）都不保留；
+* `pathData` 型的谱面导出后会**同时**带一份 `angleData`（保真优先于体积；要体积就用 `.adocao`）。
+
+要**无损回写**（连未知成员一起保留）现在做不到 —— 那要等上游的 `Preserved` 段
+（[ADOCAO](https://github.com/ADOB-C/ADOCAO) 的 TODO ⑦）。`.adocao` 的完整格式规范
+（含那段的设计）在 [EXPORT.md](EXPORT.md)。
+
+⚠️ **别在 `releaseMemory()` 之后导出**：它会放掉 `actions` 与 `pathData` —— 正是要写的东西。
+那时导出的文件会**少掉全部事件**，而且 `verify` 也看不出来（它比的是"输入 vs 导出物"，两边都空）。
+顺序是"加载 → 导出 → 再 `releaseMemory()`"。
+
 ## 模块
 
 | target | 默认 | 内容 | 依赖 |
 |---|---|---|---|
 | `ADOFAI::core` | ON | 解析（明文）、时间线、位置解算、资产查找、日志、线程池 | glm、RapidJSON |
 | `ADOFAI::archive` | ON | `.adofai.xz` / `.adofai.zst` + 4 MB 滑窗流式解压 | core；内嵌 lzma/zstd |
+| `ADOFAI::export` | ON | 导出谱面：`.adofai` / `.adofai.xz` / `.adofai.zst` / `.adocao` | core；archive 开着时还要它 |
 | `ADOFAI::audio` | ON | 打拍音合成 / 混音 / WAV 导出 | core。**不需要 miniaudio** |
 | `ADOFAI::audio_device` | OFF | 设备播放（`adofai::AudioEngine`）+ OGG 解码 | audio；引入 miniaudio + stb |
 | `ADOFAI::render` | OFF | 砖块渲染（`TileMesh` / `TileShape` / glad）| core + glad + GLFW + 平台 GL |
@@ -116,10 +181,11 @@ hs.writeWav("out.wav");             // 也可以 buffer() 交给设备播放
 
 | CMake 选项 | 默认 | 说明 |
 |---|---|---|
-| `ADOFAI_LIB_ARCHIVE` | ON | `.adofai.xz` / `.adofai.zst`（`ADOFAI::archive`）|
+| `ADOFAI_LIB_ARCHIVE` | ON | `.adofai.xz` / `.adofai.zst` / `.adocao` 的**读写**（`ADOFAI::archive`）|
+| `ADOFAI_LIB_EXPORT` | ON | 四种格式的**写出**（`ADOFAI::export`）。OFF = 完全没有导出 API |
 | `ADOFAI_LIB_AUDIO` | ON | 打拍音合成 / 导出（`ADOFAI::audio`）|
 | `ADOFAI_LIB_AUDIO_DEVICE` | OFF | 设备播放（`ADOFAI::audio_device`，引入 miniaudio + stb）|
-| `ADOFAI_LIB_RENDER` | OFF | 砖块渲染（未提供）|
+| `ADOFAI_LIB_RENDER` | OFF | 砖块渲染（`ADOFAI::render`，引入 glad + GLFW + 平台 GL）|
 | `ADOFAI_LIB_ASSET_ZIP` | ON | 资产 zip 支持（私有链 miniz）。OFF = 只从磁盘找资产 |
 | `ADOFAI_LIB_BUNDLE_DEPS` | ON | 内嵌 lzma/zstd；OFF = 用系统库（`find_package(LibLZMA/zstd)`）|
 | `ADOFAI_LIB_BUILD_TESTS` / `_EXAMPLES` | 顶层时 ON | |
@@ -179,7 +245,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 7 条 / render=ON 11 条**（随模块开关增减）：
+**render=OFF 16 条 / render=ON 20 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|
@@ -189,6 +255,8 @@ ctest --test-dir build
 | `archive_container` | `ARCHIVE=ON` 读得动 `.xz`/`.zst`；`OFF` 干净失败 |
 | `audio_hitsound_mix` | 用现场合成的音色走一遍真混音 |
 | `audio_hitsound_rules` | 打拍音铁律的源码护栏（必须饱和加法、不许 Nyquist 去重）|
+| `export_roundtrip` | 四种格式的导出都必须**读得回来且建模字段逐位相同**；同输入两次导出逐字节相同；明文导出还要老解析路径也读得动；`.adocao` 的 pack 与原件的 pack 逐字节相同。**同一条测试就是导出模块的漂移护栏**（上游给模型加字段而导出没跟上 → 红）|
+| `export_independent` | 独立验收：Python 的 `json` / `lzma` 说了算（第三方实现），一份**另写的**建模投影对比，magic/头自洽，截断与改坏必须失败 |
 | `lzma_mt_compat` | lzma_mt 内存字段的跨版本选择（5.4 起字段改名）——纯编译期，不依赖压缩库 |
 | `tile_geometry` / `tile_expansion` / `geom_probe` | 三层几何：五边形不变量 + 调用点护栏 / CPU 逐位 / GPU 逐位。**都要 render=ON** |
 | `shader_fallback` | `render/Shaders.hpp` 的内嵌回退 GLSL 必须与 `assets/shaders/*` 逐字相同。**要 render=ON** |
@@ -199,7 +267,9 @@ ctest --test-dir build
 白名单定期拷过来，所以这里的源码始终是本体某个 commit 的逐字节副本（当前对齐点见
 [SYNCED_AT](SYNCED_AT)）。**本体不依赖本库**，改镜像源码要先改本体。
 
-模块进度：core / archive / audio / audio_device / render **都已可用**。
+模块进度：core / archive / export / audio / audio_device / render **都已可用**。
+`export` 与其它模块不同：**它是库自有的**（ADOCAO 刻意不做导出），所以不在镜像白名单里 ——
+理由与护栏见 [MIRROR.md](MIRROR.md)。
 没有搬的是**像素门槛**那层验收（它要跑本体 app 抓帧，属于本体验收）。
 
 CI：三平台 × 选项矩阵（含 render ON/OFF）全绿；另有一个

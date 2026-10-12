@@ -23,7 +23,7 @@ ADOCAO 是**天天改**的那一个。若本体依赖本库，每次改本体都
 代价的另一面要认：**别人在库里发现 bug，得先在 ADOCAO 修、再对齐一次** ——
 所以"定期"是节奏不是锁，有人被卡住就当场对齐。
 
-对齐进度记在 [SYNCED_AT](SYNCED_AT)（当前 = ADOCAO `7022ece`）。
+对齐进度记在 [SYNCED_AT](SYNCED_AT)（当前 = ADOCAO `ad09d05`）。
 
 > ⚠️ **ADOCAO 在 2026-10 重写过历史**（清掉误提交的机器绝对路径），所以**旧的 sha 全部失效**。
 > 如果你手上还有重写前的 sha，别用。
@@ -35,10 +35,28 @@ ADOCAO 是**天天改**的那一个。若本体依赖本库，每次改本体都
 | `CMakeLists.txt`、`src/**/CMakeLists.txt` | `src/adofai/**/*.{hpp,cpp}` |
 | `cmake/*.cmake.in`、install/export 规则 | `tests/level_parse_test.cpp` |
 | `examples/**`、`tests/check_*.py`、`tests/data/**` | `tests/level_fixtures/**`、`tests/charts/**` |
+| `src/adofai/export/**`（**库自有的导出模块**，见下）| 其余全部 `src/adofai/**/*.{hpp,cpp}` |
 | `README.md`、`CONTRIBUTING.md`、`MIRROR.md`、`NOTICE`、`SYNCED_AT`、`.github/**` | `tests/gen_*.py` |
 
 镜像进来的是**逐字节副本**：路径与 ADOCAO **完全一致**（`src/adofai/X` ⇔ ADOCAO 的 `X`），
 不做任何文本变换 —— 这是"手动对齐便宜"的前提。
+
+### 唯一的例外：`src/adofai/export/**`
+
+`ADOFAI::export`（写 `.adofai` / `.adofai.xz` / `.adofai.zst` / `.adocao`）是**库自己加的**：
+ADOCAO 本体刻意不做导出（它的 `--export` 是打拍音 WAV），所以这段代码没有上游对应物，
+只能住在这儿。为什么不让本体当它的家见上文的"为什么不让本体当消费者"——反过来同样成立：
+**本体不需要它**，塞进主源就是给主源加一个没人用的功能。
+
+它待在 `src/adofai/` 下只是为了 include 根一致（源码树 `src/adofai/export/X` ⇔
+装出去 `<adofai/export/X>`）。代价与对策：
+
+* **保真对账要排除它**（脚本见 §3，已带 `grep -v '^src/adofai/export/'`）；rsync 是按目录拷的
+  （`core archive audio` …），本来就不会碰它；
+* **它必须自己带一条漂移护栏**：`ctest -R export_roundtrip` 比的是
+  `parse(原件)` 与 `parse(导出物)` 的建模字段指纹，判据来自解析器而不是测试里另抄的字段表。
+  上游哪天给 `LevelData` 加字段、改字段语义，这条测试立刻红 —— 这就是"没有上游对应物"
+  这件事的补偿，改 `src/adofai/export/**` 之前先读 `tests/export_roundtrip_test.cpp` 的顶部说明。
 
 ## 3. 对齐流程
 
@@ -74,9 +92,14 @@ while read -r f; do
   git cat-file blob "$(git rev-parse HEAD:$up)" > "$tmp" && n=$((n+1))
   cmp -s "$tmp" "$LIB/$f" || { echo "DIFF $f"; fail=1; }
 done < <(cd "$LIB" && git ls-files src/adofai tests \
-          | grep -vE 'CMakeLists\.txt$|check_(archive|hitsound|hitsound_rules|wav)\.py$|tests/data/')
+          | grep -vE 'CMakeLists\.txt$|check_(archive|hitsound|hitsound_rules|wav|export)\.py$|tests/data/'
+          | grep -v '^src/adofai/export/')      # 库自有的导出模块：上游没有对应物，见 §2
 echo "$n 个文件 → $([ $fail -eq 0 ] && echo 一致 || echo 有差异)"
 ```
+
+> `grep -v` 那两行就是"哪些文件不该在这里出现"的完整清单：库自己的文件（各目录的
+> `CMakeLists.txt`、`check_*.py`、`tests/data/`）与库自有的 `src/adofai/export/**`。
+> 少排一个，对账就会稳定报一条假 DIFF；多排一个，某个镜像文件就不再被验 —— 宁可一条条列出来。
 
 > 注意：**别用 `git show <sha>:<path> | cmp - file`** —— 我踩过，它会给出**假阳性**
 > （把一致的文件报成差异）。`git cat-file blob` 落到临时文件再 `cmp` 才可靠。
@@ -108,15 +131,16 @@ ctest --test-dir build
 
 | 配置 | 关键参数 | 期望 |
 |---|---|---|
-| 默认 | — | ctest 6/6 |
-| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | 5/5，且前缀里零 lzma/zstd |
-| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | 6/6（走 `find_package(LibLZMA/zstd)`）|
-| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | 6/6，core 里零 `mz_` 符号 |
-| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | 4/4 |
-| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | 6/6（会引入 miniaudio + stb）|
-| render=ON | `-DADOFAI_LIB_RENDER=ON` | 11/11（引入 glad + GLFW + 平台 GL；三层几何）|
+| 默认 | — | ctest 16/16 |
+| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | 11/11；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
+| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | 16/16（走 `find_package(LibLZMA/zstd)`）|
+| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | 16/16，core 里零 `mz_` 符号 |
+| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | 14/14 |
+| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | 16/16（会引入 miniaudio + stb）|
+| render=ON | `-DADOFAI_LIB_RENDER=ON` | 20/20（引入 glad + GLFW + 平台 GL；三层几何）|
+| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | 14/14（`ADOFAI::export` 不存在，link 它是编译期报错）|
 
-CI 里这 6 格都在 Linux 跑（[.github/workflows/build.yml](.github/workflows/build.yml)），
+CI 里这些格都在 Linux 跑（[.github/workflows/build.yml](.github/workflows/build.yml)），
 另两平台只跑默认配置。
 
 **离线构建**（CI 之外常用，省一次下载）：
@@ -145,12 +169,13 @@ cmake --build build
 
 两条容易踩的：
 
-- **消费者链 `ADOFAI::core` 之外还要什么？** 现在 `core`/`archive`/`audio` 都已
-  "公共头零重依赖"，但 `ADOFAI::archive` 需要一个能提供 lzma/zstd **库**的路径 ——
-  静态库不传递依赖，见下节。检验办法：只链模块、**不额外 find 任何压缩库**，能链上才算对。
+- **消费者链 `ADOFAI::core` 之外还要什么？** 现在 `core`/`archive`/`export`/`audio` 都已
+  "公共头零重依赖"，但 `ADOFAI::archive`（以及链了它的 `ADOFAI::export`）需要一个能提供
+  lzma/zstd **库**的路径 —— 静态库不传递依赖，见下节。检验办法：只链模块、**不额外 find
+  任何压缩库**，能链上才算对。`ADOFAI::export` 的公共头里连 `<lzma.h>`/`<zstd.h>` 都没有。
 - `examples/headless/` 里"有没有某模块"是**构建系统用宏告知**的
-  （`ADOFAI_HEADLESS_HAVE_ARCHIVE` / `_AUDIO`），**不能用 `__has_include`**：模块 OFF 时
-  它的头仍在源码树里，`__has_include` 会为真、链接期报未定义符号。
+  （`ADOFAI_HEADLESS_HAVE_ARCHIVE` / `_AUDIO` / `_EXPORT`），**不能用 `__has_include`**：
+  模块 OFF 时它的头仍在源码树里，`__has_include` 会为真、链接期报未定义符号。
 
 ## 6. 还没收口的事（动手前先看 MIRROR.md）
 

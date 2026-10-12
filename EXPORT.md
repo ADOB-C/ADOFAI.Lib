@@ -1,12 +1,20 @@
 # 怎么写 `.adocao` 导出（写入方实现指南）
 
-> 给**要自己产出 `.adocao`** 的人看：ADOCAO-E（编辑器导出）、ADOprobe（工具转换）、
-> 或者任何别的语言里的重新实现。读完这份就能写出一个**逐位无损、可被 ADOCAO 直接打开**的文件。
+> **先用现成的**：本库自带写入方 `ADOFAI::export`（源码在 `src/adofai/export/`），
+> `.adofai` / `.adofai.xz` / `.adofai.zst` / `.adocao` 四种格式一个入口 —— 用法与保真契约
+> 见 [README](README.md#导出谱面)。本文是给**要自己重新实现一遍**的人看的：ADOCAO-E（编辑器导出）、
+> ADOprobe（工具转换）、或者别的语言里的实现。它同时就是**格式规范**。
 >
-> 参考实现（C++，就是本文描述的那一套）：ADOCAO 本体的 `archive/AdocaoFormat.hpp`、
-> `AdocaoColumns.{hpp,cpp}`、`AdocaoWriter.{hpp,cpp}`、`AdocaoReader.{hpp,cpp}`。
-> **本库的镜像目前还没有这几个文件**（`SYNCED_AT` 停在 `6bca38b`，而 `.adocao` 是它之后的改动）
-> —— 要么先按 `CONTRIBUTING.md` 对齐一次把它们拿过来直接调，要么照本文自己写。
+> 参考实现：
+> * `.adocao` 的读写方在上游 ADOCAO 的 `archive/AdocaoFormat.hpp`、`AdocaoColumns.{hpp,cpp}`、
+>   `AdocaoWriter.{hpp,cpp}`、`AdocaoReader.{hpp,cpp}` —— **这几个文件已经镜像进本库**，
+>   可以直接调 `adofai::adocao::packLevel()` / `unpackLevel()`（要对齐到更新的版本见
+>   [CONTRIBUTING.md](CONTRIBUTING.md)）；
+> * `.adofai`（明文 JSON）的字段映射在本库的 `src/adofai/export/LevelJsonWriter.cpp`。
+>
+> 为什么这事落在库里而不是上游：ADOCAO 本体**刻意不做导出**（它的 `--export` 是打拍音 WAV，
+> 不是谱面容器；`archive/` 里只有读方加一个给别的工具用的 `packLevel`）。所以"把谱面写成
+> 容器"要么用本库，要么照本文自己写。
 
 ## 0. 一句话
 
@@ -55,6 +63,13 @@ Header(76 B) │ SectionEntry × sectionCount(40 B each) │ 填充到 8 B │ �
 
 > 注意上一条的后果：**跨构建**两次导出会在这 20 字节上不同，所以"同一输入两次导出逐字节相同"
 > 这个性质要在**同一构建内**理解（`archiveRoundTrip` 断言的就是后者）。
+>
+> 实测补充（读方的一个良性不对称，写别的东西的人也常踩）：**读回来的 `LevelData.actionStrTable`
+> 比原来长**。因为写入方的池是"`actionStrTable` 原序 + 末尾追加 settings 用到的字符串"，
+> 而读取方把整张池原样装进 `actionStrTable` —— 于是读方多出 settings 那几项。它们**没有任何
+> 读者**（只有 actions 的 `strId` 指向池头），所以无害；但别拿 `actionStrTable` 的**长度/内容**
+> 当往返是否成功的判据，也别把它算进内容指纹（本库的 `modelDigest` 因此只算每个 action
+> **解出来的字符串**）。
 
 > 这两个溯源字段**只作溯源**，**绝不作兼容闸门** —— 版本门禁只认 `version`；
 > 没有 git 的构建写全 0 并标 unknown，**不影响可读性**。
@@ -168,6 +183,15 @@ u16 planetEase │ u16 trackDisappearAnimation │ u16 trackAnimation │ f32 be
 
 写入方自己**无法**证明自己是对的（这话是经验）。最低验收：
 
+0. **先看本库现成的那套**（`ctest -R export` 就能跑）：
+   * `export_roundtrip` —— 四种格式 × 全部夹具：导出 → 重新解析 → 建模字段指纹必须逐位相同；
+     同输入两次导出逐字节相同；明文导出还要**老解析路径**也读得动；`.adocao` 的
+     `pack(原件)` 与 `pack(导出物)` 逐字节相同；末尾一组负向对照（截断/改坏必须失败）。
+     它同时是导出模块的**漂移护栏**（上游给 `LevelData` 加字段而导出没跟上 → 立刻红）；
+   * `export_independent` —— 用**第三方**实现说话：Python 的 `json` 解出来的必须是合法 JSON
+     （自己的解析器比 JSON 宽容，所以"自己能读回来"不等于"是合法 JSON"）、Python 的 `lzma`
+     解出来的 `.xz` 必须与明文逐字节相同、`zstd` CLI 同理、`.adocao` 头字段自洽；
+     另有一份**在 Python 里另写一遍**的建模投影用来对拍。
 1. **往返**：拿你的读取方对同一个输入解析 → 与"读明文 JSON"得到的数据**逐位相同**。
    ADOCAO 的做法：把 `angleData / actions / settings / tiles / tileBPMs / tileHitsoundVolumes …`
    共 13 个节各做 FNV 摘要比对，**0 处不一致**才算过；并且额外验一次
@@ -183,6 +207,7 @@ u16 planetEase │ u16 trackDisappearAnimation │ u16 trackAnimation │ f32 be
 * ✗ 不存派生数据（位置/朝向/BPM/时间线）；
 * ✗ 不对 v2 文件二次压缩；
 * ✗ 不手改镜像里的 `src/adofai/**`（本库是单向镜像：先在 ADOCAO 改、提交，再按
-  `CONTRIBUTING.md` 对齐）；
+  `CONTRIBUTING.md` 对齐）。**唯一的例外是 `src/adofai/export/**`** —— 那是库自有的导出模块，
+  没有上游对应物，改它不受镜像规矩约束（但要跑 `ctest -R export`，那是它的护栏）；
 * ✗ 不用 `writerCommit` / `inputHash` 做兼容判断；
 * ✗ 不发明新的段 id / codec 值而不更新 `version`（读取方会按未知段跳过、按未知 codec 失败）。

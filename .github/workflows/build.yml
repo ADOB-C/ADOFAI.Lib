@@ -33,6 +33,7 @@ jobs:
             assetzip: ON
             audio: ON
             audiodevice: OFF
+            export: ON
             render: OFF
           - name: no-archive         # PLAN.md §5：OFF 时不该需要压缩库，且前缀干净
             archive: OFF
@@ -40,6 +41,7 @@ jobs:
             assetzip: ON
             audio: ON
             audiodevice: OFF
+            export: ON
             render: OFF
           - name: system-deps        # 用系统库（liblzma / libzstd 的 CMake config）
             archive: ON
@@ -47,6 +49,7 @@ jobs:
             assetzip: ON
             audio: ON
             audiodevice: OFF
+            export: ON
             render: OFF
           - name: no-asset-zip       # 资产 zip 真的可关（上游 dc89c14 加了条件编译）
             archive: ON
@@ -54,6 +57,7 @@ jobs:
             assetzip: OFF
             audio: ON
             audiodevice: OFF
+            export: ON
             render: OFF
           - name: no-audio           # 打拍音合成可关（headless 仍能跑，只是退回合成点击音）
             archive: ON
@@ -61,6 +65,7 @@ jobs:
             assetzip: ON
             audio: OFF
             audiodevice: OFF
+            export: ON
             render: OFF
           - name: all-modules        # 全开：连设备播放那条线（miniaudio + stb）也要能编
             archive: ON
@@ -68,6 +73,15 @@ jobs:
             assetzip: ON
             audio: ON
             audiodevice: ON
+            export: ON
+            render: OFF
+          - name: no-export          # 导出模块可关：ADOFAI::export 整个不存在（link 它是编译期报错）
+            archive: ON
+            bundle: ON
+            assetzip: ON
+            audio: ON
+            audiodevice: OFF
+            export: OFF
             render: OFF
           - name: render-on          # render=ON：引入 glad + GLFW + 平台 GL（绕不开）
             archive: ON
@@ -75,6 +89,7 @@ jobs:
             assetzip: ON
             audio: ON
             audiodevice: OFF
+            export: ON
             render: ON
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +117,7 @@ jobs:
             -DADOFAI_LIB_ARCHIVE=${{ matrix.archive }} \
             -DADOFAI_LIB_BUNDLE_DEPS=${{ matrix.bundle }} \
             -DADOFAI_LIB_ASSET_ZIP=${{ matrix.assetzip }} \
+            -DADOFAI_LIB_EXPORT=${{ matrix.export }} \
             -DADOFAI_LIB_AUDIO=${{ matrix.audio }} \
             -DADOFAI_LIB_AUDIO_DEVICE=${{ matrix.audiodevice }} \
             -DADOFAI_LIB_RENDER=${{ matrix.render }}
@@ -145,31 +161,53 @@ jobs:
           set(CMAKE_CXX_STANDARD 20)
           find_package(ADOFAI.Lib CONFIG REQUIRED)
           add_executable(app main.cpp)
-          target_link_libraries(app PRIVATE ADOFAI::archive)
+          # 只链 ADOFAI::export：它把 archive/core 与压缩依赖一起带过来（静态库不传递依赖，
+          # 这条正是"Config 有没有把 lzma/zstd 接回来"的验收）。
+          target_link_libraries(app PRIVATE ADOFAI::export)
           if(TARGET ADOFAI::render)
             message(FATAL_ERROR "render=OFF 却存在 ADOFAI::render")
+          endif()
+          if(NOT TARGET ADOFAI::export)
+            message(FATAL_ERROR "export=ON 却没有 ADOFAI::export")
           endif()
           EOF
           cat > main.cpp <<'EOF'
           #include <cstdio>
+          #include <string>
           #include "archive/Install.hpp"
           #include "core/level/LevelData.hpp"
           #include "core/timeline/Timeline.hpp"
+          #include "export/LevelExport.hpp"
           int main(int argc, char** argv) {
-              if (argc < 2) return 2;
+              if (argc < 3) return 2;
               adofai::archive::install();
               adofai::LevelData level;
               if (!level.loadFromFile(argv[1])) { std::fprintf(stderr, "load failed\n"); return 1; }
               adofai::Timeline tl; tl.build(level, true);
-              std::printf("consumer ok: tiles=%zu\n", level.tiles.size());
+              // 四种格式各写一份：这一句同时验了"装出去的 ADOFAI::export 公共头可用"
+              // 与"消费者不必自己 find 任何压缩库"。
+              for (const char* e : {".adofai", ".adofai.xz", ".adofai.zst", ".adocao"}) {
+                  const std::string out = std::string(argv[2]) + e;
+                  std::string err;
+                  if (!adofai::exporter::exportLevel(level, out, err)) {
+                      std::fprintf(stderr, "export %s: %s\n", out.c_str(), err.c_str());
+                      return 3;
+                  }
+              }
+              adofai::LevelData back;
+              if (!back.loadFromFile(std::string(argv[2]) + ".adocao")) {
+                  std::fprintf(stderr, "read back .adocao failed\n");
+                  return 4;
+              }
+              std::printf("consumer ok: tiles=%zu（四种格式都写出来了）\n", level.tiles.size());
               return 0;
           }
           EOF
           cmake -B build -G Ninja -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/prefix" \
                 -DCMAKE_CXX_FLAGS="-I$RAPIDJSON_INC"
           cmake --build build --parallel
-          # 明文谱能读；顺便验 add_subdirectory 兜底路径
-          ./build/app "$GITHUB_WORKSPACE/tests/data/smoke_level.adofai"
+          # 明文谱能读；四种格式都写得出来
+          ./build/app "$GITHUB_WORKSPACE/tests/data/smoke_level.adofai" "$RUNNER_TEMP/cons-out"
 
       - name: Consumer smoke (add_subdirectory)
         if: matrix.name == 'bundled'
@@ -202,6 +240,35 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           cmake --build build --parallel
           ./build/app "$GITHUB_WORKSPACE/tests/data/smoke_level.adofai"
+
+      # AGENTS.md 的硬规矩 #3："模块 OFF 时 target 集合里没有它"是一条**承诺**，不是开关。
+      # 上面那格消费者验收只在 export=ON 时跑，所以 OFF 那侧单独验一次：
+      # 装出去的东西里不许出现 ADOFAI::export（消费者 link 它是编译期报错才算兑现）。
+      - name: Module-off promise (export=OFF ⇒ 前缀里没有 ADOFAI::export)
+        if: matrix.name == 'no-export'
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/prefix-off"
+          fail=0
+          # 判据要精确到"target 真的被导出了"：别拿 `grep ADOFAI::export` 去撞注释 ——
+          # 生成的 Config 里就有一句提到这个名字的说明注释（我第一次就踩了，报了个假红）。
+          if grep -rq "add_library(ADOFAI::export" "$RUNNER_TEMP/prefix-off/lib/cmake/"; then
+            echo "::error::export=OFF 却把 ADOFAI::export 导出了"
+            fail=1
+          fi
+          if grep -rq "set(ADOFAI_LIB_EXPORT_ENABLED ON)" "$RUNNER_TEMP/prefix-off/lib/cmake/"; then
+            echo "::error::装出去的包没记住 ADOFAI_LIB_EXPORT=OFF"
+            fail=1
+          fi
+          if [ -e "$RUNNER_TEMP/prefix-off/include/adofai/export" ]; then
+            echo "::error::export=OFF 却装了 export 的公共头"
+            fail=1
+          fi
+          if [ -e "$RUNNER_TEMP/prefix-off/lib/libadofai_export.a" ]; then
+            echo "::error::export=OFF 却装了 libadofai_export.a"
+            fail=1
+          fi
+          [ $fail -eq 0 ] && echo "export=OFF：target / 公共头 / 静态库都没有 ✅"
+          exit $fail
 
   macOS:
     # 这一格开 render：只有它会真的建 GL 上下文，所以 GPU 逐位那一层（geom_probe）

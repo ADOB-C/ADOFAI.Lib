@@ -5,15 +5,19 @@
 ## 这个仓库是什么
 
 `ADOFAI.Lib` —— 从 ADOCAO（本体，`../ADOCAO`）**单向镜像**出来的可分发包：
-解析 `.adofai` → 时间线/解算 → 打拍音 → 可选渲染。5 个模块（core / archive / audio /
-audio_device / render），其中 render 与 audio_device 默认 OFF。
+解析 `.adofai` → 时间线/解算 → 打拍音 → 可选渲染 → 可选导出。6 个模块（core / archive /
+**export** / audio / audio_device / render），其中 render 与 audio_device 默认 OFF，
+export 是**库自有**的（上游刻意不做导出，所以它没有对应物）。
 
 ## 三条硬规矩
 
 1. **`src/adofai/**` 一律不许手改。** 它是逐字节镜像，改了下次对齐就覆盖、而且两边静默漂移。
    要改就先在 `../ADOCAO` 改、提交，再按 [CONTRIBUTING.md](CONTRIBUTING.md) 的流程拷过来。
-   库自己的文件是：`CMakeLists.txt`、`src/**/CMakeLists.txt`、`cmake/*.cmake.in`、
-   `examples/**`、`tests/check_*.py`、`tests/data/**`、文档、`.github/**`。
+   库自己的文件是：`CMakeLists.txt`、`src/**/CMakeLists.txt`、`cmake/*.cmake*`、
+   `examples/**`、`tests/check_*.py`、`tests/data/**`、文档、`.github/**`，
+   以及**唯一的例外 `src/adofai/export/**`** ——
+   那是库自有的导出模块（ADOCAO 刻意不做导出，所以它没有上游对应物，
+   靠 `ctest -R export` 自己守漂移；细节见 [CONTRIBUTING.md](CONTRIBUTING.md) §2）。
 2. **入库文件里绝不出现机器绝对路径**（ADOCAO 为此重写过 352 个提交的历史）。
    本机资源走环境变量或 `~/` 相对形式。提交前自检（应为空）：
    ```bash
@@ -53,18 +57,19 @@ audio_device / render），其中 render 与 audio_device 默认 OFF。
 3. **保真对账**：所有镜像文件与上游对应路径**逐字节一致**（脚本在 CONTRIBUTING.md）；
 4. **四格矩阵**（本地最少跑默认 + render=ON）：
    ```bash
-   ctest --test-dir build            # 默认：7/7
-   ctest --test-dir build-on         # render=ON：11/11（含三层几何 + shader 一致性）
+   ctest --test-dir build            # 默认：16/16
+   ctest --test-dir build-on         # render=ON：20/20（含三层几何 + shader 一致性 + 导出）
    ```
 5. 绝对路径自检（见上）；
 6. `git push`，然后 `XDG_CACHE_HOME=/tmp/gh-cache gh run watch <id>` —— CI 9 格必须全绿。
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `6bca38b`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `ad09d05`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
-- P1–P5 完成；**P6 收尾中**。
-- 测试：render=OFF **7/7**、render=ON **11/11**；CI 9 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
+- P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
+  audio_device / render。
+- 测试：render=OFF **16/16**、render=ON **20/20**；CI 9 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
 - **GPU 逐位那一层在 CI 上跑不了**：Ubuntu/macOS runner 都没有 GL 上下文，`geom_probe` 会
   打印 `SKIP` 退 0。workflow 里有一步专门**报告**它跑没跑 —— 别把"绿"当成"GPU 验过了"。
 - 还没做：**像素门槛**（`capture-gate.sh` 的 50 状态逐字节）没搬 —— 它要跑本体 app 抓帧，
@@ -77,7 +82,8 @@ audio_device / render），其中 render 与 audio_device 默认 OFF。
 
 | 文件 | 给谁 |
 |---|---|
-| [README.md](README.md) | 使用者（Features / Quick Start / 用法 / 选项 / 依赖）|
+| [README.md](README.md) | 使用者（Features / Quick Start / 用法 / 导出 / 选项 / 依赖）|
+| [EXPORT.md](EXPORT.md) | 要**自己实现**导出的人（`.adocao` 格式规范）；也用来说明库内 `src/adofai/export/` 的契约 |
 | [VERSIONING.md](VERSIONING.md) | 版本号怎么读、怎么钉（两个版本号的区别）|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 维护者（对齐流程、提交前矩阵、消费者验收）|
 | [MIRROR.md](MIRROR.md) | 镜像的细节与**所有实测记录**（含失败机制）|

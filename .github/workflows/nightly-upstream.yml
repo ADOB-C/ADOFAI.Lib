@@ -41,6 +41,9 @@ jobs:
 
       # 与手动对齐同一套白名单（CONTRIBUTING.md §3）。库自己的 CMakeLists 不动。
       # 上游新增的 .cpp 会被 rsync 一并带过来，所以"忘了加进清单"这类问题在这里也能暴露。
+      #
+      # 注意 `export` **故意不在这个列表里**：`src/adofai/export/**` 是库自有的导出模块
+      # （ADOCAO 刻意不做导出，上游没有对应物），rsync 进去只会把它删/覆盖掉。
       - name: Sync whitelisted sources from upstream (no commit)
         run: |
           for d in core archive audio render glad; do

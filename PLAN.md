@@ -168,6 +168,15 @@ target 名：`ADOFAI::core` / `ADOFAI::archive` / `ADOFAI::audio` / `ADOFAI::ren
 | P4 | `audio`（打拍音两条铁律的注释与逐样本对拍测试一起镜像）| 同上 |
 | P5 | `render`（默认 OFF；CPU/GPU 逐位 + 几何测试一起镜像；shader 资产与内嵌回退一起镜像）| 同上 + render ON/OFF 两个矩阵 |
 | P6 | 收尾：README（消费示例）、版本策略、每周清单写进本库自己的 `AGENTS.md` | — |
+| P7 ✅ **已完成**（2026-10）| **库自有的 `ADOFAI::export`**：`.adofai`（LevelData → JSON）/ `.adofai.xz` / `.adofai.zst` / `.adocao` 四种格式的写出 + 示例 CLI + 两条护栏 | `ctest -R export` 绿（四格式 × 全夹具往返指纹一致、确定性、老路径也读得动、负向对照）；consumer 只链 `ADOFAI::export` 就能写四种格式 |
+
+> **P7 与 §9"不许让 ADOCAO 依赖本库"不冲突，但它本身是本计划外的一块** —— 计划里
+> export 一遍都没提，因为做计划时判断"导出"要么等上游加 `Preserved` 段（无损回写），
+> 要么就是 `archive/AdocaoWriter.cpp` 那个给别的工具用的 `packLevel`。实际做的时候分清了：
+> **本体刻意不做导出**（`--export` 是打拍音 WAV），而"解析 → 写出"这条链恰恰是分发库该提供的，
+> 于是 `src/adofai/export/**` 成为**唯一一处不受单向镜像约束的源码**。
+> 代价与对策（一条判据来自解析器的漂移护栏）写在 [MIRROR.md](MIRROR.md) 与
+> [CONTRIBUTING.md](CONTRIBUTING.md) §2。
 
 **P1 在 ADOCAO 里跑这三条**（"改名 / 资产 API 没改坏"的硬门槛；P2 之后 ADOCAO 不受本库影响，所以只在 P1 需要）：
 

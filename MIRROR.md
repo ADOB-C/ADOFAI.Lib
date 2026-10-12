@@ -3,7 +3,9 @@
 本库是 **ADOCAO 的单向镜像**（PLAN.md §0/§3）：ADOCAO 是主源，`src/adofai/**` 里的东西
 只能通过在 ADOCAO 里改、再拷过来更新。**在库里手改 `src/adofai/**` 是错的** ——
 下次对齐会覆盖掉；库里允许改的只有本文件、`CMakeLists.txt`、`src/**/CMakeLists.txt`、
-`cmake/*.cmake.in`、install/export 规则、`examples/**`、`README.md`、`NOTICE`、`SYNCED_AT`。
+`cmake/*.cmake*`、install/export 规则、`examples/**`、`README.md`、`NOTICE`、`SYNCED_AT`。
+
+**唯一的例外是 `src/adofai/export/**`** —— 见下面 §"库自有的 `export` 模块"。
 
 对齐进度记在 `SYNCED_AT`。已知不在镜像里的上游改动：ADOCAO 的 `AGENTS.md` / `docs/`
 （文档，不在白名单里，所以 `SYNCED_AT` 记的 commit 与"最后跑同步命令的 commit"可能差一笔
@@ -55,6 +57,55 @@ PLAN.md §6 把 `core` 排在 P2、`archive` 排在 P3。P2 开始时 core 还�
 `tests/check_archive.py` 把"读得动 / 干净失败"两向都固化成了测试；
 `tests/level_parse_test.cpp`（镜像过来的）另外把每个明文 fixture 在内存里压成 xz/zstd 再加载，
 要求 13 个节逐位一致 —— 这就是 PLAN §6 里 P3 要的 round-trip。
+
+## 库自有的 `export` 模块（**唯一一处 `src/adofai/**` 不受镜像规矩约束**）
+
+`ADOFAI::export` 写 `.adofai` / `.adofai.xz` / `.adofai.zst` / `.adocao`，源码在
+`src/adofai/export/{LevelJsonWriter,LevelEncode,LevelExport}.{hpp,cpp}`。
+
+**为什么在这儿而不是上游。** 这个判断值得写下来，因为它与"单向镜像"那条规矩看起来冲突：
+
+- 上游 ADOCAO **刻意不做导出**。它的 `--export` 是打拍音 WAV（`docs/cli.md`），
+  `archive/` 里只有读方加一个给别的工具用的 `packLevel`（`.adocao` 的写方）；
+  没有任何 `.adofai` 的写入方，也**没有计划**加 —— 那属于 ADOCAO-E（编辑器）。
+- 所以"把谱面写成容器"这件事只可能落在分发库这边，落上去也不是"给主源塞一个没人用的功能"。
+- 反方向（把 exporter 放上游）的代价与"为什么不让本体当消费者"是同一条：本体不需要它，
+  上游没人跑它，它会在上游变成没有测试、没人知道的死代码。
+
+**代价：它不在保真对账的覆盖里** —— 也就是最容易被上游悄悄改坏的那类代码。
+`LevelJsonWriter.cpp` 里那张"每个 eventType 写哪几个键"的映射表，本质上是
+`core/level/LevelData.cpp` 里 `buildAction()` + 两条解析路径的**逆**。上游改前者，这里就会错。
+
+**对策是一条判据来自解析器自己的护栏**（而不是在测试里再抄一份字段表 —— 抄一份才是真正会
+静默漂移的做法）：
+
+```bash
+ctest -R export                     # export_roundtrip + export_independent
+```
+
+* `export_roundtrip`：对**每个**夹具 × **每种**格式，断言
+  `modelDigest(parse(原件)) == modelDigest(parse(导出物))`。上游哪天给 `LevelData` 加字段、
+  或改某个字段的解析语义，导出物就会缺那一项 / 写错那一项 → 重新解析出来的值不同 → 指纹不等 → 红。
+  另外它还断言：同输入两次导出逐字节相同；明文导出**老解析路径**（`ADOCAO_FORCE_DOM_PARSE=1`）
+  也读得动；`.adocao` 的 `pack(原件)` 与 `pack(导出物)` 逐字节相同；截断/改坏的容器必须失败。
+* `export_independent`：用**第三方**实现说话 —— Python 的 `json`（证明写出来的是合法 JSON，
+  而不是只有我们那个宽容的解析器认的东西）、Python 的 `lzma`、`zstd` CLI，
+  再加一份**在 Python 里另写一遍**的建模投影。
+
+负向对照已验：把 `beatsAhead` 那一行改成不写 → `f19_all_action_types` 的四条路径全部报
+"往返后建模字段不一致（指纹 8d0f89dd3a9433f3 vs 8c3586dd39da8b1a）"，连老解析路径那条也红。
+
+**对齐时要记得**：保真对账脚本已排除 `^src/adofai/export/`（见 CONTRIBUTING §3），
+rsync 是按 `core archive audio …` 逐目录拷的，本来也不会碰它。
+
+### 顺带发现的一处上游不对称（已写进 EXPORT.md）
+
+`.adocao` 的 `packLevel` 池 = `actionStrTable` 原序 + 末尾追加 settings 用到的字符串，
+而 `unpackLevel` 把整张池原样装回 `actionStrTable` —— 于是
+`unpack(pack(x)).actionStrTable` **比 `x.actionStrTable` 长**（diag_dict 实测 2 → 8 项）。
+多出来的项没有读者（只有 actions 的 `strId` 指向池头），是良性的；但它意味着
+"拿 `actionStrTable` 比对来断言 `.adocao` 往返成功"是**错**的判据 —— 我第一版 `modelDigest`
+就是这么写的，被导出模块自己的 `Options::verify` 当场抓出来（那正是它默认开的意义）。
 
 ## P3 收口：现状与残留
 
