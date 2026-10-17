@@ -47,6 +47,10 @@ bool putSettings(Writer& w, const LevelData::Settings& s, std::string& err)
 {
     w.StartObject();
     w.Key("version");      w.Int(s.version);
+    // 模型字段叫 `songFilename`，而 `.adofai` 里的键是 `song`（`readSettings` 里 `song` 优先，
+    // 还接受 `songFilename` 当回退）。2026-10-17 上游新加的字段：漏写它就会把"这首歌是哪个
+    // 音频"整条丢掉 —— 这正是 modelDigest 必须把它一起算进去的原因。
+    w.Key("song");         w.String(s.songFilename.c_str(), (rapidjson::SizeType)s.songFilename.size());
     w.Key("bpm");          if (!putF(w, s.bpm, err, "settings.bpm")) return false;
     w.Key("offset");       if (!putF(w, s.offset, err, "settings.offset")) return false;
     w.Key("countdownTicks"); w.Int(s.countdownTicks);
@@ -190,6 +194,7 @@ struct Digest {
 void digestSettings(Digest& d, const LevelData::Settings& s)
 {
     d.i32(s.version);
+    d.str(s.songFilename);          // `.adofai` 的 `"song"`
     d.f32(s.bpm);
     d.f32(s.offset);
     d.i32(s.countdownTicks);

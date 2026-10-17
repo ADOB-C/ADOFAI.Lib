@@ -15,10 +15,13 @@ import re
 import sys
 from pathlib import Path
 
-# 内嵌串名 → assets/shaders 下的文件。与上游的清单一致（7 对）。
+# 内嵌串名 → assets/shaders 下的文件。与上游的清单一致（8 对）。
 CHECKS = [
     ("kTileVertSrc", "tile.vert"),
     ("kTileFragSrc", "tile.frag"),
+    # GL 3.3 回退路：砖块几何改成"查 CPU 展开表"而不是在着色器里展开（2026-10-17）。
+    # 它与 tile.vert 的 4.10 路**出图逐字节相同**，但两份 GLSL 只有这一个文件承载 3.3 路。
+    ("kTileCpuVertSrc", "tile_cpu.vert"),
     ("kHighlightFragSrc", "highlight.frag"),
     ("kPlanetVertSrc", "planet.vert"),
     ("kPlanetFragSrc", "planet.frag"),
@@ -26,6 +29,10 @@ CHECKS = [
     ("kTrailFragSrc", "trail.frag"),
     # 注：icon.vert / icon.frag 已被上游删除（图标并入 tile.vert 的几何展开），
     # 所以这里也不再校验它们。
+    #
+    # 注：`kHighlightVertSrc` **不是**一个独立的内嵌串，而是 `= kTileVertSrc` 这个别名
+    # （高亮与砖块共用同一条顶点路）。所以这里没有 highlight.vert 这一对 —— 盘上的
+    # assets/shaders/highlight.vert 是合并前的遗留文件（13 行的旧着色器），已经不参与渲染。
 ]
 
 

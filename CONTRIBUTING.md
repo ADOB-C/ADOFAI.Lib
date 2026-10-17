@@ -149,14 +149,14 @@ ctest --test-dir build
 
 | 配置 | 关键参数 | 期望 |
 |---|---|---|
-| 默认 | — | ctest **26/26** |
-| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **12/12**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
-| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | **26/26**（走 `find_package(LibLZMA/zstd)`）|
-| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | **26/26**，core 里零 `mz_` 符号 |
-| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | **22/22** |
-| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | **26/26**（会引入 miniaudio + stb）|
-| render=ON | `-DADOFAI_LIB_RENDER=ON` | **30/30**（引入 glad + GLFW + 平台 GL；三层几何）|
-| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | **24/24**（`ADOFAI::export` 不存在，link 它是编译期报错）|
+| 默认 | — | ctest **27/27** |
+| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **13/13**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
+| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | **27/27**（走 `find_package(LibLZMA/zstd)`）|
+| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | **27/27**，core 里零 `mz_` 符号 |
+| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | **23/23** |
+| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | **27/27**（会引入 miniaudio + stb）|
+| render=ON | `-DADOFAI_LIB_RENDER=ON` | **31/31**（引入 glad + GLFW + 平台 GL；三层几何）|
+| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | **25/25**（`ADOFAI::export` 不存在，link 它是编译期报错）|
 
 > 计数会随用例增减变，**它只是"这一刻该看到多少条"的对照表**，不是判据；判据永远是
 > "`ctest` 全绿 + 该跳过的都打印了跳过原因"。本地一次跑全 8 格：`bash build/matrix.sh`

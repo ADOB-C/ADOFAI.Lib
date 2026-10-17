@@ -211,6 +211,13 @@ if(ADOFAI_LIB_ENABLE_ARCHIVE)
                 --zooms 25,100 --repeat 3)
 endif()
 
+# 关卡对象的**所有权 / 幂等**：不可拷贝（缓存所有权）、可安全移动、`loadFromBuffer` 两次 == 一次
+# （actions 不许被追加）、以及 `releaseAngleData()` 之后仍能建窗口缓存。只用 core，不碰 archive。
+add_executable(adofai_level_reload_test level_reload_test.cpp)
+target_link_libraries(adofai_level_reload_test PRIVATE ADOFAI::core)
+add_test(NAME level_reload
+    COMMAND adofai_level_reload_test "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai")
+
 # 解析/加载的各种上限（core 的 CountLimits）
 add_executable(adofai_limits_test limits_test.cpp)
 target_link_libraries(adofai_limits_test PRIVATE ADOFAI::core)

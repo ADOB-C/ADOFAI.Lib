@@ -23,7 +23,7 @@ namespace exporter {
 // LevelData → 明文 `.adofai`（JSON 文本）。
 //
 // **契约（右逆）**：`parse(writeJson(parse(text)))` 与 `parse(text)` 在"库建模的字段"上
-// **逐位相同** —— settings 的 19 个字段、angleData、actions 的 6 列、pathData。这条由
+// **逐位相同** —— settings 的 20 个字段、angleData、actions 的 6 列、pathData。这条由
 // tests/export_roundtrip_test.cpp 对每个夹具 × 每种格式断言，也是这个模块唯一的一致性定义。
 //
 // **明确不承诺的**（LevelData 里根本没有这些信息，不是在导出这一步丢的）：

@@ -1,6 +1,8 @@
 {
   "settings": {
     "version": 15,
+    "song": "smoke_audio.ogg",
+    "artist": "ADOFAI.Lib",
     "bpm": 120,
     "offset": 0,
     "trackColor": "debb7b",

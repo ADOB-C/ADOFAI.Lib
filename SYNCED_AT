@@ -5,9 +5,38 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=52fc91d
-ADOCAO_COMMIT_FULL=52fc91d3b18720d15e183c380a4acc6a1068a057
-ADOCAO_COMMIT_DATE=2026-10-16
+ADOCAO_COMMIT=afcaa7d
+ADOCAO_COMMIT_FULL=afcaa7d89a17dc31bb6ff82d1d1f4dd9b8ed82c7
+ADOCAO_COMMIT_DATE=2026-10-17
+# 本次同步要点（3 个提交，镜像区 12 个文件 + 1 张新 shader + 1 条新用例）：
+#
+#  1. **`LevelData::Settings` 多了 `songFilename`**（`.adofai` 里的 `"song"`）。这是编辑器
+#     "另存/重打包"要的字段，`.adocao` 的 settings 记录把它**追加在末尾**、**不 bump 版本号**
+#     （读侧 `off + 2 <= n` 才读，两个方向都兼容）。→ 导出模块必须跟着写 `"song"`：
+#     漏了就是把"这首歌用哪个音频"整条丢掉，而且**任何一条原有护栏都看不见**（`modelDigest`
+#     里没有它、Python 那侧的键集合检查也只数我们自己的清单）。已补三处：写方、指纹、
+#     Python 投影；并新增一道**未知键闸**（见下）。
+#  2. **`LevelData` 变成 move-only**（缓存所有权：`unique_ptr<FloorWindowCache, 自定义删除器>`），
+#     并新增 `refreshDerivedCaches()` / `expandAngles()` / `setAngles()` / `setAngle()` /
+#     `rebuildPositions()` 这些给编辑器的公开入口（`processActions()` 被它取代）。
+#  3. **render 的 GL 3.3 回退路**：新增 `assets/shaders/tile_cpu.vert` + 内嵌串
+#     `kTileCpuVertSrc`（砖块几何改成"查 CPU 展开表"，与 4.10 路出图逐字节相同）。
+#     → shader 一致性护栏从 7 对变 8 对。
+#  4. 新用例 `level_reload_test`（所有权/幂等/`releaseAngleData` 之后建窗口缓存）。
+#
+# 这一轮**导出模块新增的那道闸**值得单独记：`check_export.py` 现在断言"元件里出现的每个
+# settings 键，要么被建模、要么在 SETTINGS_NOT_MODELED 的显式清单里"。上游加字段 → 夹具带上它
+# → 红 → 逼你做一个决定。负向对照已验（把 `artist` 从清单里注释掉，立刻红并指名那个键）。
+# `song` 本身则由 `modelDigest` 覆盖：负向对照已验（写方漏写 → 自检当场报指纹不一致）。
+#
+# 上游仍有的小问题（不是库改出来的）：
+#   * `assets/shaders/highlight.vert` 是合并前的**遗留文件**（13 行旧着色器），已经不参与渲染
+#     —— `kHighlightVertSrc` 是 `kTileVertSrc` 的别名，所以那样本不该留在盘上。
+#   * archive/AdocaoWindow.cpp:94 的 `b / 0`（-Wdivision-by-zero，UB）仍在。
+#   * LevelArchive.cpp / AdocaoColumns.cpp 的 -Wswitch 仍在。
+#
+# 上一次同步：52fc91d（`.adocao` v3 分块列 + 续算快照、`.ilytx`、角度/每砖紧凑化、线程池换 Scheduler）。
+
 # 本次同步要点（74 个提交，镜像区 66 个文件、+8191/−418 行）：
 #
 #  1. **`.adocao` v3**：列改分块容器（每 4096 元素一块、块内自选编码）+ `Derived` 段

@@ -58,9 +58,12 @@ def run(args):
 # ─────────────────────────── 独立建模投影 ───────────────────────────
 # 这一节是"库建模了什么"的**第二份表述**。改动它请同时改 src/adofai/export/LevelJsonWriter.cpp。
 
-# settings 的 19 个建模字段与默认值（默认值取解析器的默认，用于"键缺席"的情形）。
+# settings 的 20 个建模字段与默认值（默认值取解析器的默认，用于"键缺席"的情形）。
 SETTINGS_DEFAULTS = {
     "version": 15,
+    # 模型字段叫 `songFilename`，`.adofai` 里的键是 `song`（解析器还接受 `songFilename` 当回退，
+    # 见下面的 MODEL_TO_JSON）。
+    "song": "",
     "bpm": 100.0,
     "offset": 0.0,
     "countdownTicks": 4,
@@ -82,6 +85,20 @@ SETTINGS_DEFAULTS = {
 }
 FLOAT_SETTINGS = {
     "bpm", "offset", "zoom", "rotation", "hitsoundVolume", "beatsBehind", "beatsAhead",
+}
+# 模型字段名 → `.adofai` 里的键名（只有不一致的才需要写）
+MODEL_TO_JSON = {"songFilename": "song"}
+# 备选拼写：解析器认这些键，但导出统一写成规范的那个
+JSON_ALIASES = {"song": ("songFilename",)}
+
+# **元件里出现、但库不建模的 settings 键**（导出会丢掉它们）。这是一份显式清单：
+# 上游哪天加了新键、而夹具里也带上了，下面那条"未知键"检查就会红 —— 逼你做一个决定
+# （要么建模，要么记进这里并说明为什么丢得起）。
+SETTINGS_NOT_MODELED = {
+    "songFilename",        # `song` 的备选拼写，值会写进模型的 songFilename
+    "artist",              # 只影响编辑器显示
+    "levelDesc",           # 同上
+    "trackStyle",          # 同上
 }
 KNOWN_TYPES = {
     "Twirl", "SetSpeed", "PositionTrack", "SetHitsound", "Bookmark", "Pause", "AnimateTrack",
@@ -143,6 +160,9 @@ def proj(doc):
     settings = {}
     for k, dflt in SETTINGS_DEFAULTS.items():
         v = s.get(k, dflt)
+        for alias in JSON_ALIASES.get(k, ()):
+            if k not in s and alias in s:
+                v = s[alias]
         if k in FLOAT_SETTINGS:
             settings[k] = f32(v)
         elif k == "stickToFloors":
@@ -156,7 +176,7 @@ def proj(doc):
         actions = []
     actions = [proj_action(a) for a in actions
                if isinstance(a, dict) and "floor" in a and a.get("eventType") in KNOWN_TYPES]
-    # 注意**不**比 settings 的键集合：原件往往只写几个键，而导出物是自描述的（19 个全写），
+    # 注意**不**比 settings 的键集合：原件往往只写几个键，而导出物是自描述的（20 个全写），
     # 这是有意的差异。导出物那份键集合由下面单独断言。
     # 原件里**未建模**的 settings 键在这里也正是被忽略的 —— 它们在解析期就没了。
     return {
@@ -265,6 +285,14 @@ def main():
         except Exception:
             src_doc = None
         if src_doc is not None:
+            # 元件里有没有"库不认识的 settings 键"：那意味着导出会静默丢掉它。
+            # 见 SETTINGS_NOT_MODELED 上的说明 —— 这是防"上游加字段、导出悄悄落后"的那道闸。
+            src_keys = set((src_doc.get("settings") or {}).keys())
+            unknown = src_keys - set(SETTINGS_DEFAULTS) - SETTINGS_NOT_MODELED
+            if unknown:
+                fail(f"{tag}: 元件里有库不建模的 settings 键 {sorted(unknown)} —— "
+                     f"导出会丢掉它们。要么在 LevelJsonWriter 里建模，要么记进 "
+                     f"SETTINGS_NOT_MODELED 并写明为什么丢得起")
             a, b = proj(src_doc), proj(exported_doc)
             if a != b:
                 diff = [k for k in a if a[k] != b[k]]
@@ -275,9 +303,9 @@ def main():
         else:
             print(f"note: {tag} 原件不是严格 JSON，跳过独立投影（C++ 那条仍会覆盖）")
 
-        # 导出物必须自带全部 19 个建模 settings 键（自描述，不靠默认值补）
+        # 导出物必须自带全部建模 settings 键（自描述，不靠默认值补）
         if sorted(exported_doc.get("settings", {}).keys()) != sorted(SETTINGS_DEFAULTS.keys()):
-            fail(f"{tag}: 导出的 settings 键集合不是那 19 个建模字段")
+            fail(f"{tag}: 导出的 settings 键集合不是那 {len(SETTINGS_DEFAULTS)} 个建模字段")
 
         # ---- ⑥ 确定性 ----
         plain2 = os.path.join(out_dir, f"{tag}.again.adofai")
