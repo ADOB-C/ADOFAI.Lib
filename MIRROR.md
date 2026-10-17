@@ -296,6 +296,11 @@ install + `find_package` 的消费者验收；`no-export` 那格额外验"模块
 `add_library(ADOFAI::export`、export 的公共头、`libadofai_export.a`）。
 另有一个 nightly job 每天拿**未经确认的上游 HEAD** 跑一遍"镜像 + 构建 + 测试"。
 
+**本地只跑 `default` + `render` 两格**（约 1.5 分钟），其余 6 格交给上面这 10 个 job ——
+8 格全量在本地要 5~6 分钟且每格都从零重编 lzma/zstd/glm，收益只到"CI 复核"为止。
+同样的道理，`push` 之后**不守 `gh run watch`**（一轮 3~4 分钟纯等）：把 run 链接报出来，
+过一会儿再 `gh run view`。例外见 [AGENTS.md](AGENTS.md) 的每周清单第 4、6 条。
+
 ## 不在镜像范围内、且不打算补的
 
 - **`tests/capture_states.txt` + 像素门槛（`capture-gate.sh` 的 50 状态逐字节）**：它要跑本体

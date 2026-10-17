@@ -58,13 +58,25 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
    （出图，不进库；2026-10 踩过一次），后者处理"上游删了文件"（删过 `assets/shaders/icon.*`、
    `core/util/ThreadPool.*`）；
 3. **保真对账**：所有镜像文件与上游对应路径**逐字节一致**（脚本在 CONTRIBUTING.md）；
-4. **四格矩阵**（本地最少跑默认 + render=ON）：
+4. **本地只跑两格**（默认 + render=ON）。其余 6 格**交给 CI** —— CI 那 10 格把它们全覆盖了，
+   本地再跑一遍是重复劳动（8 格全量约 5–6 分钟，两格约 1.5 分钟）：
    ```bash
    ctest --test-dir build            # 默认：28/28
-   ctest --test-dir build-on         # render=ON：32/32（含三层几何 + shader 一致性 + 导出）
+   ctest --test-dir build-render     # render=ON：32/32（含三层几何 + shader 一致性 + 导出）
    ```
+   `build-render` 由 `bash build/matrix.sh render` 建（也接受多个配置名，产物在 `build-*/`，
+   已 gitignore）。**只有改了 install/export/选项矩阵/CI 本身时**才值得本地多跑几格 ——
+   那几类改动坏的恰好是"OFF 那侧"，而 OFF 侧的承诺最容易静默破。
 5. 绝对路径自检（见上）；
-6. `git push`，然后 `XDG_CACHE_HOME=/tmp/gh-cache gh run watch <id>` —— CI **10 格**必须全绿。
+6. `git push`，然后把 **run 链接报出来，不要 `gh run watch` 阻塞等待**：CI 一轮 3~4 分钟
+   （最慢的永远是 `windows-default`），守着看纯属空等。要结果时这样查：
+   ```bash
+   XDG_CACHE_HOME=/tmp/gh-cache gh run list --limit 1          # 拿 id / 状态
+   XDG_CACHE_HOME=/tmp/gh-cache gh run view <id>               # 看 10 格结果
+   XDG_CACHE_HOME=/tmp/gh-cache gh run view <id> --log | grep -E "FAIL|tests passed"
+   ```
+   **只有这三种情况才守着看**：改了 `.github/**`、改了 `cmake/*.cmake*` 或 install/export 规则、
+   或者上一轮 CI 是红的。其余时候"推完报价、过一会儿再看"就够了。
 
 ## 当前状态（2026-10）
 

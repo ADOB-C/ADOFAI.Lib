@@ -142,7 +142,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel
 ctest --test-dir build
 ```
 
-## 4. 提交前要跑的矩阵
+## 4. 矩阵（CI 全跑；本地按需）
 
 各模块开关会互相影响，所以别只跑默认配置。本地等价命令（`$ALL` 是离线源的
 `-DFETCHCONTENT_SOURCE_DIR_*`，见下）：
@@ -159,8 +159,13 @@ ctest --test-dir build
 | 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | **26/26**（`ADOFAI::export` 不存在，link 它是编译期报错）|
 
 > 计数会随用例增减变，**它只是"这一刻该看到多少条"的对照表**，不是判据；判据永远是
-> "`ctest` 全绿 + 该跳过的都打印了跳过原因"。本地一次跑全 8 格：`bash build/matrix.sh`
-> （产物在 `build-*/`，已 gitignore）。
+> "`ctest` 全绿 + 该跳过的都打印了跳过原因"。
+>
+> **本地默认只跑两格**（`default` + `render`，约 1.5 分钟）—— 其余 6 格 CI 的 10 个 job 已经
+> 全覆盖，本地再跑一遍是重复劳动。只有改了 **install/export 规则、`cmake/*.cmake*`、选项矩阵
+> 或 `.github/**`** 时才值得本地多跑几格（坏的就是"OFF 那侧"的承诺）。全量：
+> `bash build/matrix.sh`（接受配置名参数，如 `bash build/matrix.sh noarch system`；
+> 产物在 `build-*/`，已 gitignore）。
 
 CI 里这些格都在 Linux 跑（[.github/workflows/build.yml](.github/workflows/build.yml)），
 另两平台只跑默认配置。
