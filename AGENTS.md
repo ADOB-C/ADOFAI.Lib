@@ -77,6 +77,8 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
    ```
    **只有这三种情况才守着看**：改了 `.github/**`、改了 `cmake/*.cmake*` 或 install/export 规则、
    或者上一轮 CI 是红的。其余时候"推完报价、过一会儿再看"就够了。
+   另外：只改 `**.md` / `SYNCED_AT` / `LICENSE` / `NOTICE` 的提交**压根不会触发 CI**
+   （workflow 里的 `paths-ignore`）—— 那种推完别去找 run，等多久都不会出现。
 
 ## 当前状态（2026-10）
 

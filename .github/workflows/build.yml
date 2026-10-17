@@ -3,9 +3,18 @@ name: Build
 on:
   push:
     branches: [main, master]
-    paths-ignore:            # 纯文档不可能弄坏构建
+    # 纯文档 / 纯元数据的改动不可能弄坏构建 —— 别为它排一轮 3~4 分钟的三平台矩阵。
+    # 判据是"所有改动文件都落在这份清单里"，所以源码 + 文档混着推仍然会跑。
+    #   * `**.md` 已经覆盖 PLAN.md，别再单列它；
+    #   * `SYNCED_AT` 只是溯源元数据（喂 version.hpp 的 ADOFAI_LIB_ADOCAO_COMMIT），
+    #     没有任何测试断言它的值 —— 所以"镜像内容没变、只把对齐点往前挪"这种提交也不该跑；
+    #   * LICENSE / NOTICE 同理。
+    paths-ignore:
       - '**.md'
-      - 'PLAN.md'
+      - 'SYNCED_AT'
+      - 'LICENSE'
+      - 'NOTICE'
+  # PR 那份**刻意不加** paths-ignore：走 PR 的是要评审的改动，宁可多跑一轮。
   pull_request:
     branches: [main, master]
   workflow_dispatch:
