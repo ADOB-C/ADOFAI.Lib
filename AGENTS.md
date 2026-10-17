@@ -60,19 +60,19 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 3. **保真对账**：所有镜像文件与上游对应路径**逐字节一致**（脚本在 CONTRIBUTING.md）；
 4. **四格矩阵**（本地最少跑默认 + render=ON）：
    ```bash
-   ctest --test-dir build            # 默认：27/27
-   ctest --test-dir build-on         # render=ON：31/31（含三层几何 + shader 一致性 + 导出）
+   ctest --test-dir build            # 默认：28/28
+   ctest --test-dir build-on         # render=ON：32/32（含三层几何 + shader 一致性 + 导出）
    ```
 5. 绝对路径自检（见上）；
 6. `git push`，然后 `XDG_CACHE_HOME=/tmp/gh-cache gh run watch <id>` —— CI **10 格**必须全绿。
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `afcaa7d`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `3f73ca2`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
-- 测试：render=OFF **27/27**、render=ON **31/31**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
+- 测试：render=OFF **28/28**、render=ON **32/32**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
 - **GPU 逐位那一层在 CI 上跑不了**：Ubuntu/macOS runner 都没有 GL 上下文，`geom_probe` 会
   打印 `SKIP` 退 0。workflow 里有一步专门**报告**它跑没跑 —— 别把"绿"当成"GPU 验过了"。
 - 还没做：**像素门槛**（`capture-gate.sh` 的 50 状态逐字节）没搬 —— 它要跑本体 app 抓帧，

@@ -170,6 +170,32 @@ rsync 是按 `core archive audio …` 逐目录拷的，本来也不会碰它。
   —— 它不完美（只有夹具里真的出现那个键才会响），但它是**不需要反射**能做到的最强形式，
   而且比"在测试里再抄一份字段表"强得多：抄的那份永远不会因为你忘了更新它而变红。
 
+### 第四次对齐（3f73ca2）：镜像区一个文件都没动，但它点出一个**库侧缺口**
+
+上游那一笔是纯 `app/` 的（事件图标在实机里全消失 —— `releaseMeshTemporaries()` 在网格建完
+就清了 `tileHasTwirl`/`tileHasSetSpeed`）。本库没有 `app/`、也没有像素门槛，所以这个 bug 本身
+**在库里看不见也不可能出现**。但它依赖的**契约是镜像代码里的**：
+
+> `TileMesh::deriveRange()` 在**绘制期**按可见窗口现从 `tileHasTwirl[i]` / `tileHasSetSpeed[i]` /
+> `tileBPMs[i]/[i-1]` 派生每砖图标位 —— 所以 `releaseMemory()` **必须留着这三张表**。
+
+这句话在 `LevelData.hpp` 的字段注释和 `releaseMemory()` 的注释里都有，但**没有任何测试**盯它。
+后果：上游哪天为了省内存给 `releaseMemory()` 加一句 `tileHasTwirl.clear()`，本库每个消费者都会
+静默丢图标 —— 与上游那次一模一样的失败方式（不崩不报错，`i < size()` 把条件变成恒假）。
+
+补了库自有的 `tests/check_release_contract.cpp`（不碰 GL，CI 上真跑）：三张表在 `releaseMemory()`
+之后逐位不变、`tileCount()` 不变、文档说会放掉的东西真的放掉了、重复调用安全；外加一句
+"这些输入里必须真的有 Twirl/SetSpeed 层"防测试空转（实测累加 14 处图标）。
+负向对照已验：给 `releaseMemory()` 临时插一句 `tileHasTwirl.clear()` → 两条断言红。
+
+**同一笔里的另一类问题（shader 路径悬空）本库结构上不会犯**：`app/LevelScene.cpp` 把
+`resolveAsset(...).c_str()` 绑到 `const char*`，临时 `std::string` 当场析构 → 路径悬空 →
+一直走内嵌回退串（所以改 `assets/shaders/*.vert` 全无效果）。本库这边：
+`render/Shader.cpp` 的 `compile(vertPath, fragPath, …)` 路径是**调用方**传进来的；
+而 `tests/check_shader_fallback.py` 机械保证"内嵌回退串 == assets/shaders 下的文件"
+逐字相同。于是"路径坏了退回内嵌串"这个失败是**无害的**（渲染结果一样）。
+真正让上游那笔变成静默 bug 的是"路径坏了 **+ 回退串滞后**"，而后半截在库里被那道护栏堵住了。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

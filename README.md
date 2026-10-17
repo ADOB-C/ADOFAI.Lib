@@ -39,7 +39,7 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 27/27
+ctest --test-dir build          # 默认 28/28
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
@@ -249,7 +249,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 27 条 / render=ON 31 条**（随模块开关增减）：
+**render=OFF 28 条 / render=ON 32 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|
@@ -262,6 +262,7 @@ ctest --test-dir build
 | `adocao_blocked` / `adocao_checkpoints` / `adocao_window` | `.adocao` v3：分块列的逐位往返（含 4096 边界、-0.0/NaN）+ "同质/字典主导/白噪声列上不许赢"；`Derived` 段的续算快照必须与全谱一次算**逐位**相同；按块重算的 Tile/BPM/起始时刻必须与全量加载逐位相同 |
 | `ilytx` | Re_ADOJAS 的 `.ilytx`（xz(tar(ilybin))）与参照谱逐位等价；紧凑模式的 f32 误差；三个坏样本必须干净失败 |
 | `angle_store` / `floor_window_cache` / `timeline_anchor` | 角度紧凑存储、每砖按块物化、Timeline 每 4096 层锚点 —— 都是"丢掉密集数组之后与全量逐位相同"，各带反面对照 |
+| `release_contract` | `releaseMemory()` 之后 `tileBPMs` / `tileHasTwirl` / `tileHasSetSpeed` 必须逐位不变 —— **图标位是绘制期现算的**，清掉它们图标会静默全消失（上游 app 真踩过）。不碰 GL，CI 上真跑 |
 | `level_reload` | 关卡对象的**所有权与幂等**：`LevelData` 不可拷贝（缓存所有权）、可安全移动、`loadFromBuffer` 两次 == 一次（actions 不许被追加）、`releaseAngleData()` 之后仍能建窗口缓存 |
 | `bit_span` / `cull_index` / `cull_cost` | 位图区间置值、粗块 AABB 索引与全扫逐元素对拍、三种剔除策略的候选数/漏砖数/耗时留痕 |
 | `export_roundtrip` | 四种格式的导出都必须**读得回来且建模字段逐位相同**；同输入两次导出逐字节相同；明文导出还要老解析路径也读得动；`.adocao` 的 pack 与原件的 pack 逐字节相同。**同一条测试就是导出模块的漂移护栏**（上游给模型加字段而导出没跟上 → 红）|

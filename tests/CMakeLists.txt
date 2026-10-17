@@ -218,6 +218,20 @@ target_link_libraries(adofai_level_reload_test PRIVATE ADOFAI::core)
 add_test(NAME level_reload
     COMMAND adofai_level_reload_test "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai")
 
+# `releaseMemory()` 的**存活契约**：`tileBPMs` / `tileHasTwirl` / `tileHasSetSpeed` 必须原样留着
+# （图标位是绘制期由 `TileMesh::deriveRange()` 现算的）。上游 2026-10-17 就是因为清了后两张，
+# 本体 app 里"事件图标全部消失"且不崩不报错 —— 而本库没有像素门槛能抓到这件事。
+# 不碰 GL，所以 CI 上真跑（与会 SKIP 的 geom_probe 不同）。
+add_executable(adofai_release_contract_test check_release_contract.cpp)
+target_link_libraries(adofai_release_contract_test PRIVATE ADOFAI::core)
+add_test(NAME release_contract
+    COMMAND adofai_release_contract_test
+            "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai"
+            "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_midspin.adofai"
+            "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_mixed.adofai"
+            "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f19_all_action_types.json"
+            "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f25_setspeed_variants.json")
+
 # 解析/加载的各种上限（core 的 CountLimits）
 add_executable(adofai_limits_test limits_test.cpp)
 target_link_libraries(adofai_limits_test PRIVATE ADOFAI::core)

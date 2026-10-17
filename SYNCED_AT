@@ -5,9 +5,39 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=afcaa7d
-ADOCAO_COMMIT_FULL=afcaa7d89a17dc31bb6ff82d1d1f4dd9b8ed82c7
+ADOCAO_COMMIT=3f73ca2
+ADOCAO_COMMIT_FULL=3f73ca2f6befb338a24d5e7fdf1229d675183eda
 ADOCAO_COMMIT_DATE=2026-10-17
+# 本次同步要点（1 个提交，**镜像区一个文件都没动** —— 只改了 app/）：
+#
+#   `3f73ca2 fix(app): 事件图标在实机里全部消失 —— 网格建完就把图标位图清了（+ 修我自己引入的
+#            shader 悬空路径）`。四个文件全在 app/（GameWindow.{cpp,hpp} / LevelLoader.cpp /
+#   LevelScene.cpp），白名单区为空 —— 所以镜像内容与上一次（afcaa7d）**逐字节相同**，
+#   174 个文件的保真对账仍然一致。按既有政策（见文件末尾"不在镜像里的上游改动"），
+#   纯 app/ 提交本来不必 bump；这次 bump 是因为**库侧补了一条测试**（见下）。
+#
+#   但那一笔点出了本库的一个真缺口，所以补了库自有的 `tests/check_release_contract.cpp`：
+#   * 上游的 bug 是 `releaseMeshTemporaries()` 清了 `tileHasTwirl`/`tileHasSetSpeed`，
+#     而图标位是 `TileMesh::deriveRange()` 在**绘制期**现从这三张表派生的
+#     （`tileHasTwirl[i]` / `tileHasSetSpeed[i]` / `tileBPMs[i]/[i-1]`），
+#     那句 `i < size()` 的保护把"表没了"变成恒假 → 图标全消失，不崩不报错。
+#   * 契约本身（"`releaseMemory()` 必须留着这三张表"）写在镜像来的 `LevelData.hpp` 与
+#     `releaseMemory()` 的注释里，但**没有任何测试盯着它**。本库又没有像素门槛（那要跑
+#     本体 app 抓帧），所以上游哪天为了省内存加一句 `tileHasTwirl.clear()`，本库每个消费者
+#     都会静默丢图标。
+#   * 新测试盯三件事：这三张表在 `releaseMemory()` 之后逐位不变、`tileCount()` 不变、
+#     以及"文档说会放掉的东西真的放掉了"（actions / hitsoundCachesReleased 粘性标志）；
+#     另有一句"这些输入里必须真的有 Twirl/SetSpeed 层"，防测试空转。
+#   * 负向对照已验：给 `releaseMemory()` 临时插一句 `tileHasTwirl.clear()` → 两条断言红。
+#     它不碰 GL，所以 CI 上真跑（与会 SKIP 的 geom_probe 不同）。
+#
+# 另一类问题（shader 路径悬空）**本库结构上不会犯**：`Shader::compile` 的路径是调用方传进来的，
+# 而 `check_shader_fallback.py` 机械保证"内嵌回退串 == assets/shaders 下的文件" ——
+# 所以就算调用方给的路径坏了退回内嵌串，渲染结果也一样（app 那边是"路径坏了 + 回退串滞后"
+# 才变成静默 bug）。这一点写进了 MIRROR.md。
+#
+# 上一次同步：afcaa7d（`settings.songFilename`、LevelData move-only + 编辑器写回入口、GL 3.3 回退路）。
+
 # 本次同步要点（3 个提交，镜像区 12 个文件 + 1 张新 shader + 1 条新用例）：
 #
 #  1. **`LevelData::Settings` 多了 `songFilename`**（`.adofai` 里的 `"song"`）。这是编辑器
