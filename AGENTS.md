@@ -68,17 +68,15 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
    已 gitignore）。**只有改了 install/export/选项矩阵/CI 本身时**才值得本地多跑几格 ——
    那几类改动坏的恰好是"OFF 那侧"，而 OFF 侧的承诺最容易静默破。
 5. 绝对路径自检（见上）；
-6. `git push`，然后把 **run 链接报出来，不要 `gh run watch` 阻塞等待**：CI 一轮 3~4 分钟
-   （最慢的永远是 `windows-default`），守着看纯属空等。要结果时这样查：
+6. `git push`，然后把 **run 链接报出来就够了 —— 一律不要 `gh run watch`**。
+   GitHub 的通知邮件就是"跑完了"的信号（仓库所有者会收到）；守着看是纯空等
+   （一轮 3~4 分钟，最慢的永远是 `windows-default`）。红了对方会说，那时才查：
    ```bash
-   XDG_CACHE_HOME=/tmp/gh-cache gh run list --limit 1          # 拿 id / 状态
-   XDG_CACHE_HOME=/tmp/gh-cache gh run view <id>               # 看 10 格结果
+   XDG_CACHE_HOME=/tmp/gh-cache gh run view <id>
    XDG_CACHE_HOME=/tmp/gh-cache gh run view <id> --log | grep -E "FAIL|tests passed"
    ```
-   **只有这三种情况才守着看**：改了 `.github/**`、改了 `cmake/*.cmake*` 或 install/export 规则、
-   或者上一轮 CI 是红的。其余时候"推完报价、过一会儿再看"就够了。
    另外：只改 `**.md` / `SYNCED_AT` / `LICENSE` / `NOTICE` 的提交**压根不会触发 CI**
-   （workflow 里的 `paths-ignore`）—— 那种推完别去找 run，等多久都不会出现。
+   （workflow 里的 `paths-ignore`）—— 那种推完既没有 run 也没有邮件，不用去找。
 
 ## 当前状态（2026-10）
 
