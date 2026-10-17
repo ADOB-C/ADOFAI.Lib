@@ -10,6 +10,8 @@ add_library(adofai_core STATIC
     level/ByteSource.cpp
     level/JsonCleaner.cpp
     level/LevelData.cpp
+    # 每砖结构窗口化：LevelData::tilePositionAt / tileDirectionAt 的按块物化 provider
+    level/FloorWindow.cpp
     level/LevelPath.cpp
     timeline/Timeline.cpp
     timeline/PositionSolver.cpp
@@ -18,7 +20,9 @@ add_library(adofai_core STATIC
     util/DataFile.cpp
     util/Logger.cpp
     util/Progress.cpp
-    util/ThreadPool.cpp)
+    # Scheduler 取代了原来的 ThreadPool（上游把线程池改成"可注入调度器"，并加了
+    # header-only 的 util/Profile.hpp）。ThreadPool.{hpp,cpp} 已在上游删除。
+    util/Scheduler.cpp)
 
 # 公共依赖：glm 的 dvec2 出现在 PlaybackClock.hpp / PositionSolver.hpp。
 # 它跟着本库一起装，消费者由 cmake/ADOFAI.LibConfig.cmake.in 的 find_dependency(glm) 接上。

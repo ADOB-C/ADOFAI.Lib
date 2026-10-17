@@ -46,15 +46,24 @@ jobs:
       # （ADOCAO 刻意不做导出，上游没有对应物），rsync 进去只会把它删/覆盖掉。
       - name: Sync whitelisted sources from upstream (no commit)
         run: |
+          # --exclude='map/'：上游 core/map/** 不属于本库（PLAN.md §3），这一条会拖进来。
           for d in core archive audio render glad; do
-            rsync -a --exclude='.DS_Store' --exclude='CMakeLists.txt' "upstream/$d/" "src/adofai/$d/"
+            rsync -a --delete --exclude='.DS_Store' --exclude='CMakeLists.txt' --exclude='map/' \
+              "upstream/$d/" "src/adofai/$d/"
           done
-          rsync -a --exclude='.DS_Store' upstream/assets/shaders/ assets/shaders/
-          rsync -a --exclude='.DS_Store' upstream/tests/level_fixtures/ tests/level_fixtures/
-          rsync -a --exclude='.DS_Store' upstream/tests/charts/ tests/charts/
+          rsync -a --delete --exclude='.DS_Store' upstream/assets/shaders/ assets/shaders/
+          rsync -a --delete --exclude='.DS_Store' upstream/tests/level_fixtures/ tests/level_fixtures/
+          rsync -a --delete --exclude='.DS_Store' upstream/tests/charts/ tests/charts/
+          # 这份清单与 CONTRIBUTING §3 的 for 循环必须一致（那边是权威，这里只是复述）
           for f in level_parse_test.cpp lzma_mt_compat_test.cpp \
                    tile_geometry_test.cpp tile_expansion_test.cpp geom_probe_test.cpp \
-                   gen_level_fixtures.py gen_render_fixtures.py; do
+                   adocao_columns_test.cpp adocao_diagnostics_test.cpp \
+                   adocao_blocked_test.cpp adocao_checkpoints_test.cpp adocao_window_test.cpp \
+                   angle_store_test.cpp bit_span_test.cpp floor_window_cache_test.cpp \
+                   timeline_anchor_test.cpp cull_index_test.cpp cull_cost_probe.cpp ilytx_test.cpp \
+                   limits_test.cpp position_offset_test.cpp raw_pcm_test.cpp hz_grid_test.cpp \
+                   gen_level_fixtures.py gen_render_fixtures.py gen_adocao_charts.py \
+                   gen_ilytx_fixtures.mjs; do
             [ -f "upstream/tests/$f" ] && cp "upstream/tests/$f" tests/ || true
           done
           echo "== 同步后与库里原有文件的差异（只看白名单区域）=="

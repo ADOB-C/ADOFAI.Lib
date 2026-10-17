@@ -223,11 +223,16 @@ bool writeJson(const LevelData& level, std::string& out, std::string& err)
 
     w.StartObject();
 
-    if (!level.angleData.empty()) {
+    // 角度一律走 `angleCount()` / `angleAt()`，**不直接读 `angleData`**：上游 2026-10 加了
+    // 紧凑存储（`releaseAngleData()` 会 `swap` 掉密集数组，只留字典 + 位打包下标），
+    // 那之后 `angleData` 是空的、值在 AngleStore 里。这两个访问器是官方口径
+    // （LevelData.hpp：「运行期读角度一律走 angleAt()」），未压缩时行为与直读逐位相同。
+    const int64_t nAngles = level.angleCount();
+    if (nAngles > 0) {
         w.Key("angleData");
         w.StartArray();
-        for (double v : level.angleData)
-            if (!putNumber(w, v, err, "angleData")) return false;
+        for (int64_t i = 0; i < nAngles; ++i)
+            if (!putNumber(w, level.angleAt(i), err, "angleData")) return false;
         w.EndArray();
     }
     if (!level.pathData.empty()) {
@@ -259,8 +264,10 @@ uint64_t modelDigest(const LevelData& level)
     Digest d;
     d.str("adofai.model.v1");            // 指纹自身的版本，改字段就一起改（免得新旧指纹看起来一样）
     digestSettings(d, level.settings);
-    d.f64((double)level.angleData.size());
-    for (double v : level.angleData) d.f64(v);
+    // 同 writeJson：走 angleAt()，于是"释放过角度"的 LevelData 也能算指纹
+    const int64_t nAngles = level.angleCount();
+    d.f64((double)nAngles);
+    for (int64_t i = 0; i < nAngles; ++i) d.f64(level.angleAt(i));
     d.str(level.pathData);
 
     // actionStrTable **不进指纹**，指纹里进的是每个 action **解析出来的字符串**（下面）。

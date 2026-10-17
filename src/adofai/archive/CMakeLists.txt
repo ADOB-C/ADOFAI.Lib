@@ -13,12 +13,25 @@ add_library(adofai_archive STATIC
     # `.adocao` 的列编码器（字典/常量/差分/位打包/原始）。**不依赖** lzma/zstd：
     # 压缩只是列流之后的可选一步，设计核心是"每列按取值基数选编码"。
     AdocaoColumns.cpp
+    # v3 的分块列容器（4096 一块、块内自选编码）。与 Columns 不同，它用 **zstd 帧** ——
+    # 帧是 seek 的单位，必须能单独解压（archive 的 PRIVATE 依赖里有 zstd）。
+    AdocaoBlocked.cpp
     # `.adocao` 写入方（pack）：依赖 core 的 LevelData（archive → core 是允许的方向）
     AdocaoWriter.cpp
     # `.adocao` 读取方（unpack）：填 LevelData 但不做收尾（收尾与两条 JSON 路径共用）
     AdocaoReader.cpp
+    # v3 的 `Derived` 段：每 4096 层的续算快照。要建一次 Timeline 才拿得到 timeSec/bpm
+    # —— 用权威实现，不重抄状态机（所以它额外依赖 core/timeline，archive 本来就 PUBLIC 依赖 core）。
+    AdocaoCheckpoints.cpp
+    # 每砖结构窗口化：从 checkpoint + 一块 angleData + 这一块的事件重算窗口内的
+    # Tile/tileBPMs/tileStartTimes（算式与浮点类型必须与生产路径逐字一致）
+    AdocaoWindow.cpp
     # v3 判据统计（哨兵掩码 + 差分基数），给 pack 的编码选择当依据
-    AdocaoDiagnostics.cpp)
+    AdocaoDiagnostics.cpp
+    # Re_ADOJAS 的 `.ilytx`（= xz(tar(ilybin))）：解 ilybin 的核心二进制
+    Ilybin.cpp
+    #   …… 再把它翻译成等价的 .adofai 明文，交回 core 那条唯一路径（不建第二条解析链）
+    Ilytx.cpp)
 
 # 写入方会把"生成这份文件的源码来自哪个 commit"写进文件头做溯源（读取方根本不看它，
 # 它只作排查/可复现断言）。上游那边取的是 `git rev-parse HEAD`，但**库这边的 HEAD 是库自己的

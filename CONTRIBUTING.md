@@ -66,12 +66,29 @@ cd ../ADOCAO && git log -1 --oneline      # 记住要对齐到的 commit
 
 # 1) 按白名单拷（排除 core/map、app、各目录的 CMakeLists）
 cd ../ADOFAI.Lib
-for d in core archive audio; do
-  rsync -a --exclude='.DS_Store' --exclude='CMakeLists.txt' ../ADOCAO/$d/ src/adofai/$d/
+# --exclude='map/' 是**必须的**：上游 core/map/**（map / 出图）不属于本库（PLAN.md §3），
+# 而 core/ 这一条 rsync 会把整个子树拖进来。2026-10 那次同步就真踩了，进库前才发现。
+# --delete：上游会删文件（删过 assets/shaders/icon.*、删过 core/util/ThreadPool.*），
+# 不带它就会在库里留一堆"上游已经没有"的孤儿源文件。
+for d in core archive audio render glad; do
+  rsync -a --delete --exclude='.DS_Store' --exclude='CMakeLists.txt' --exclude='map/' \
+    ../ADOCAO/$d/ src/adofai/$d/
 done
-rsync -a --exclude='.DS_Store' ../ADOCAO/tests/level_fixtures/ tests/level_fixtures/
-rsync -a --exclude='.DS_Store' ../ADOCAO/tests/charts/ tests/charts/
-for f in level_parse_test.cpp gen_level_fixtures.py gen_render_fixtures.py; do
+rsync -a --delete --exclude='.DS_Store' ../ADOCAO/assets/shaders/ assets/shaders/
+rsync -a --delete --exclude='.DS_Store' ../ADOCAO/tests/level_fixtures/ tests/level_fixtures/
+rsync -a --delete --exclude='.DS_Store' ../ADOCAO/tests/charts/ tests/charts/
+# 镜像来的测试源码与夹具生成脚本（逐字节副本）。
+# 这份清单要跟着上游 tests/ 里"库也想要的那些"走：新增的 .cpp 记得加进来，否则它们会
+# 在库里编译不到、也就不会被挂成用例（`ilytx` / `adocao_window` 这类就是这样来的）。
+for f in level_parse_test.cpp lzma_mt_compat_test.cpp \
+         tile_geometry_test.cpp tile_expansion_test.cpp geom_probe_test.cpp \
+         adocao_columns_test.cpp adocao_diagnostics_test.cpp \
+         adocao_blocked_test.cpp adocao_checkpoints_test.cpp adocao_window_test.cpp \
+         angle_store_test.cpp bit_span_test.cpp floor_window_cache_test.cpp \
+         timeline_anchor_test.cpp cull_index_test.cpp cull_cost_probe.cpp ilytx_test.cpp \
+         limits_test.cpp position_offset_test.cpp raw_pcm_test.cpp hz_grid_test.cpp \
+         kick_chord_test.cpp timeline_ab_dump.cpp tl_dump.cpp tl_full_dump.cpp tl_trail_dump.cpp \
+         gen_level_fixtures.py gen_render_fixtures.py gen_adocao_charts.py gen_ilytx_fixtures.mjs; do
   cp ../ADOCAO/tests/$f tests/
 done
 
@@ -92,13 +109,14 @@ while read -r f; do
   git cat-file blob "$(git rev-parse HEAD:$up)" > "$tmp" && n=$((n+1))
   cmp -s "$tmp" "$LIB/$f" || { echo "DIFF $f"; fail=1; }
 done < <(cd "$LIB" && git ls-files src/adofai tests \
-          | grep -vE 'CMakeLists\.txt$|check_(archive|hitsound|hitsound_rules|wav|export)\.py$|tests/data/'
+          | grep -vE 'CMakeLists\.txt$|tests/check_|tests/export_roundtrip_test\.cpp$|tests/data/'
           | grep -v '^src/adofai/export/')      # 库自有的导出模块：上游没有对应物，见 §2
 echo "$n 个文件 → $([ $fail -eq 0 ] && echo 一致 || echo 有差异)"
 ```
 
 > `grep -v` 那两行就是"哪些文件不该在这里出现"的完整清单：库自己的文件（各目录的
-> `CMakeLists.txt`、`check_*.py`、`tests/data/`）与库自有的 `src/adofai/export/**`。
+> `CMakeLists.txt`、`tests/check_*`、`tests/export_roundtrip_test.cpp`、`tests/data/`）
+> 与库自有的 `src/adofai/export/**`。
 > 少排一个，对账就会稳定报一条假 DIFF；多排一个，某个镜像文件就不再被验 —— 宁可一条条列出来。
 
 > 注意：**别用 `git show <sha>:<path> | cmp - file`** —— 我踩过，它会给出**假阳性**
@@ -131,14 +149,18 @@ ctest --test-dir build
 
 | 配置 | 关键参数 | 期望 |
 |---|---|---|
-| 默认 | — | ctest 16/16 |
-| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | 11/11；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
-| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | 16/16（走 `find_package(LibLZMA/zstd)`）|
-| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | 16/16，core 里零 `mz_` 符号 |
-| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | 14/14 |
-| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | 16/16（会引入 miniaudio + stb）|
-| render=ON | `-DADOFAI_LIB_RENDER=ON` | 20/20（引入 glad + GLFW + 平台 GL；三层几何）|
-| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | 14/14（`ADOFAI::export` 不存在，link 它是编译期报错）|
+| 默认 | — | ctest **26/26** |
+| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **12/12**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
+| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | **26/26**（走 `find_package(LibLZMA/zstd)`）|
+| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | **26/26**，core 里零 `mz_` 符号 |
+| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | **22/22** |
+| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | **26/26**（会引入 miniaudio + stb）|
+| render=ON | `-DADOFAI_LIB_RENDER=ON` | **30/30**（引入 glad + GLFW + 平台 GL；三层几何）|
+| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | **24/24**（`ADOFAI::export` 不存在，link 它是编译期报错）|
+
+> 计数会随用例增减变，**它只是"这一刻该看到多少条"的对照表**，不是判据；判据永远是
+> "`ctest` 全绿 + 该跳过的都打印了跳过原因"。本地一次跑全 8 格：`bash build/matrix.sh`
+> （产物在 `build-*/`，已 gitignore）。
 
 CI 里这些格都在 Linux 跑（[.github/workflows/build.yml](.github/workflows/build.yml)），
 另两平台只跑默认配置。

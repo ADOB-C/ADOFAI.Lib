@@ -1,4 +1,5 @@
 #include "core/timeline/PositionSolver.hpp"
+#include <cstdlib>   // getenv（诊断）
 #include "core/timeline/Timeline.hpp"
 
 #include <algorithm>
@@ -11,8 +12,8 @@
 namespace adofai {
 
 void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& redOut, glm::dvec2& blueOut) {
-    const auto& tiles = timeline.level()->tiles;
-    const int64_t nFull = (int64_t)tiles.size();   // #0：int64 算，收窄前显式判
+    const LevelData& L = *timeline.level();   // ③ 切片 4：走访问器，不直接碰 tiles[]
+    const int64_t nFull = L.tileCount();   // #0：int64 算，收窄前显式判
     if (!fitsInt32(nFull)) {
         LOG_E("PositionSolver 需要 64 位索引（#0 阶段 3）：%lld 层超出 int32", (long long)nFull);
         return;
@@ -22,12 +23,12 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
     int tileIdx = timeline.findTileIndex(t);
 
     // Before first tile: orbit backward at constant BPM
-    if (t < timeline.tileStartTimes()[0]) {
-        const auto& p0 = tiles[0].position;
+    if (t < timeline.startTimeAt(0)) {
+        const auto& p0 = L.tilePositionAt(0);
         double bpm = timeline.tileBPMs()[0];
         bool cw = timeline.tileIsCW()[0];
         double startAngle = (timeline.level()->settings.rotation + 180.0) * 3.14159265358979 / 180.0;
-        double dt = timeline.tileStartTimes()[0] - t;
+        double dt = timeline.startTimeAt(0) - t;
         double rps = (bpm / 60.0) * 3.14159265358979;
         double angle = cw ? (startAngle + dt * rps) : (startAngle - dt * rps);
         double dist = 1.0;
@@ -40,13 +41,13 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
 
     if (tileIdx >= n - 1) {
         int lastIdx = n - 1;
-        const auto& pivotPos = tiles[lastIdx].position;
+        const auto& pivotPos = L.tilePositionAt(lastIdx);
         double startAngle = 0.0;
         if (lastIdx > 0) {
-            const auto& prevPos = tiles[lastIdx - 1].position;
+            const auto& prevPos = L.tilePositionAt(lastIdx - 1);
             startAngle = std::atan2(prevPos[1]-pivotPos[1], prevPos[0]-pivotPos[0]);
         }
-        double extraTime = t - timeline.tileStartTimes()[lastIdx];
+        double extraTime = t - timeline.startTimeAt(lastIdx);
         double rps = (double)(timeline.tileBPMs()[lastIdx]/60.0) * 3.14159265358979;
         double currentAngle = timeline.tileIsCW()[lastIdx] ? (startAngle-extraTime*rps) : (startAngle+extraTime*rps);
         glm::dvec2 mv(pivotPos[0]+std::cos(currentAngle), pivotPos[1]+std::sin(currentAngle));
@@ -56,8 +57,8 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
     }
 
     bool isRed = (tileIdx%2==0);
-    const auto& pivotPos = tiles[tileIdx].position;
-    double startTime = timeline.tileStartTimes()[tileIdx];
+    const auto& pivotPos = L.tilePositionAt(tileIdx);
+    double startTime = timeline.startTimeAt(tileIdx);
     double duration = timeline.durationAt(tileIdx);
     double progress = (duration>0.0001)?(t-startTime)/duration:1.0;
     if (progress<0) progress=0; if (progress>1) progress=1;
@@ -70,19 +71,19 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
 }
 
 void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tileIdx, glm::dvec2& redOut, glm::dvec2& blueOut) {
-    const auto& tiles = timeline.level()->tiles;
-    const int64_t nFull = (int64_t)tiles.size();   // #0：int64 算，收窄前显式判
+    const LevelData& L = *timeline.level();   // ③ 切片 4：走访问器，不直接碰 tiles[]
+    const int64_t nFull = L.tileCount();   // #0：int64 算，收窄前显式判
     if (!fitsInt32(nFull)) {
         LOG_E("PositionSolver 需要 64 位索引（#0 阶段 3）：%lld 层超出 int32", (long long)nFull);
         return;
     }
     const int n = (int)nFull;
     if (n < 2) return;
-    if (t < timeline.tileStartTimes()[0]) {
-        const auto& p0 = tiles[0].position;
+    if (t < timeline.startTimeAt(0)) {
+        const auto& p0 = L.tilePositionAt(0);
         double bpm = timeline.tileBPMs()[0]; bool cw = timeline.tileIsCW()[0];
         double startAngle = (timeline.level()->settings.rotation + 180.0) * 3.14159265358979 / 180.0;
-        double dts = timeline.tileStartTimes()[0] - t;
+        double dts = timeline.startTimeAt(0) - t;
         double rps = (bpm / 60.0) * 3.14159265358979;
         double angle = cw ? (startAngle + dts * rps) : (startAngle - dts * rps);
         glm::dvec2 mv(p0[0] + std::cos(angle), p0[1] + std::sin(angle));
@@ -93,13 +94,13 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
     }
     if (tileIdx >= n - 1) {
         int lastIdx = n - 1;
-        const auto& pivotPos = tiles[lastIdx].position;
+        const auto& pivotPos = L.tilePositionAt(lastIdx);
         double startAngle = 0.0;
         if (lastIdx > 0) {
-            const auto& prevPos = tiles[lastIdx - 1].position;
+            const auto& prevPos = L.tilePositionAt(lastIdx - 1);
             startAngle = std::atan2(prevPos[1]-pivotPos[1], prevPos[0]-pivotPos[0]);
         }
-        double extraTime = t - timeline.tileStartTimes()[lastIdx];
+        double extraTime = t - timeline.startTimeAt(lastIdx);
         double rps = (double)(timeline.tileBPMs()[lastIdx]/60.0) * 3.14159265358979;
         double currentAngle = timeline.tileIsCW()[lastIdx] ? (startAngle-extraTime*rps) : (startAngle+extraTime*rps);
         glm::dvec2 mv(pivotPos[0]+std::cos(currentAngle), pivotPos[1]+std::sin(currentAngle));
@@ -108,8 +109,8 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
         return;
     }
     bool isRed = (tileIdx%2==0);
-    const auto& pivotPos = tiles[tileIdx].position;
-    double startTime = timeline.tileStartTimes()[tileIdx];
+    const auto& pivotPos = L.tilePositionAt(tileIdx);
+    double startTime = timeline.startTimeAt(tileIdx);
     double duration = timeline.durationAt(tileIdx);
     double progress = (duration>0.0001)?(t-startTime)/duration:1.0;
     if (progress<0) progress=0; if (progress>1) progress=1;
@@ -122,10 +123,10 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
 }
 
 double PositionSolver::tilePathSpeed(const Timeline& timeline, double t) {
-    if (timeline.tileStartTimes().empty()) return 0.0;
+    if (timeline.tileCount() == 0) return 0.0;
     int idx = timeline.findTileIndex(t);
     if (idx < 0) idx = 0;
-    if (idx >= (int)timeline.tileStartTimes().size()) idx = (int)timeline.tileStartTimes().size() - 1;
+    if (idx >= (int)timeline.tileCount()) idx = (int)timeline.tileCount() - 1;
     const double d = timeline.durationAt(idx);
     if (d <= 1e-9) return 0.0;
 
@@ -146,23 +147,22 @@ PositionSolver::TrailWindow PositionSolver::trailWindow(const Timeline& timeline
     TrailWindow w;
     w.startTime = t;
     w.sampleRate = cfg.fixedRate;
-    if (timeline.tileStartTimes().empty()) return w;
+    if (timeline.tileCount() == 0) return w;
 
     // 1) Window first: seconds (default) or a tile count back.
     double start = t - (double)cfg.duration;
     if (cfg.lengthInTiles) {
-        const auto& startTimes = timeline.tileStartTimes();
         int i = timeline.findTileIndex(t);
         if (i < 0) i = 0;
-        if (i >= (int)startTimes.size()) i = (int)startTimes.size() - 1;
+        if (i >= (int)timeline.tileCount()) i = (int)timeline.tileCount() - 1;
         // Walk back by tile COUNT (not by accumulated seconds) and take a
         // fraction of the tile before that for a fractional request.
         const double back = std::max(0.0, (double)cfg.tiles);
         const int whole = (int)std::floor(back);
         const double frac = back - (double)whole;
         i = std::max(0, i - whole);
-        start = startTimes[i];
-        if (frac > 1e-6 && i > 0 && i - 1 < (int)timeline.tileStartTimes().size())
+        start = timeline.startTimeAt(i);
+        if (frac > 1e-6 && i > 0 && i - 1 < (int)timeline.tileCount())
             start -= frac * (double)timeline.durationAt(i - 1);
     }
     if (start > t) start = t;
@@ -207,13 +207,21 @@ void PositionSolver::sampleTrailRange(const Timeline& timeline, double startTime
 
     int tileIdx = timeline.findTileIndex(startTime);
     if (tileIdx < 0) tileIdx = 0;
-    int tsz = (int)timeline.tileStartTimes().size();
+    const int tsz = (int)timeline.tileCount();
 
     for (int i = 0; i < maxSamples; i++) {
         double tt = startTime + dt * (double)i;
         if (tt > t) break;
-        while (tileIdx + 1 < tsz && tt >= timeline.tileStartTimes()[tileIdx + 1])
+        while (tileIdx + 1 < tsz && tt >= timeline.startTimeAt(tileIdx + 1))
             tileIdx++;
+        if (i < 3 && std::getenv("ADOCAO_TRAIL_INPUTS")) {
+            const LevelData& L = *timeline.level();
+            const auto p = L.tilePositionAt(tileIdx);
+            LOG_I("trail-in[%d] idx=%d tt=%.17g st=%.17g pos=%.17g,%.17g sa=%.17g ta=%.17g dir=%.17g",
+                  i, tileIdx, tt, timeline.startTimeAt(tileIdx), p[0], p[1],
+                  (double)timeline.startAngleAt(tileIdx), (double)timeline.totalAngleAt(tileIdx),
+                  (double)L.tileDirectionAt((int64_t)tileIdx - 1));
+        }
         glm::dvec2 r(0), b(0);
         positionAtTile(timeline, tt, tileIdx, r, b);
         redXY[samples*2]=r.x; redXY[samples*2+1]=r.y;

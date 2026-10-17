@@ -135,6 +135,80 @@ if(ADOFAI_LIB_ENABLE_ARCHIVE)
     add_executable(adofai_adocao_diagnostics_test adocao_diagnostics_test.cpp)
     target_link_libraries(adofai_adocao_diagnostics_test PRIVATE ADOFAI::archive)
     add_test(NAME adocao_diagnostics COMMAND adofai_adocao_diagnostics_test)
+
+    # `.adocao` v3 的分块列容器：逐位往返（含 4096 边界、-0.0/NaN/极值）+ 分段型收益 +
+    # "同质/字典主导/白噪声列上不许赢"（最坏零收益）+ 按块随机访问 + 坏数据干净失败。
+    add_executable(adofai_adocao_blocked_test adocao_blocked_test.cpp)
+    target_link_libraries(adofai_adocao_blocked_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_blocked COMMAND adofai_adocao_blocked_test)
+
+    # v3 `Derived` 段（每 4096 层的续算快照）：唯一验收手段是"从快照重算 position，
+    # 与全谱一次算逐位 memcmp"，外加 1 ULP 的反面对照。
+    add_executable(adofai_adocao_checkpoints_test adocao_checkpoints_test.cpp)
+    target_link_libraries(adofai_adocao_checkpoints_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_checkpoints COMMAND adofai_adocao_checkpoints_test)
+
+    # 每砖结构窗口化：从 checkpoint + 一块数据重算 Tile/tileBPMs/tileStartTimes，必须与
+    # 全量加载逐位相同（含块边界事件、中旋跨窗、SetSpeed 的 float 累乘）。
+    add_executable(adofai_adocao_window_test adocao_window_test.cpp)
+    target_link_libraries(adofai_adocao_window_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_window COMMAND adofai_adocao_window_test)
+
+    # `.ilytx`（Re_ADOJAS 自研容器 xz(tar(ilybin))）：与参照谱逐位等价 + 紧凑模式的 f32 误差
+    # + 三个坏样本必须干净失败。样本是上游用**他们的编码器**生成的（tests/gen_ilytx_fixtures.mjs）。
+    add_executable(adofai_ilytx_test ilytx_test.cpp)
+    target_link_libraries(adofai_ilytx_test PRIVATE ADOFAI::archive)
+    add_test(NAME ilytx
+        COMMAND adofai_ilytx_test "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures")
+endif()
+
+# ③ 切片 4：位图区间置值（纯头文件 render/BitSpan.hpp，朴素逐位实现当参照）。不碰 GL。
+add_executable(adofai_bit_span_test bit_span_test.cpp)
+target_link_libraries(adofai_bit_span_test PRIVATE ADOFAI::core)
+add_test(NAME bit_span COMMAND adofai_bit_span_test)
+
+# 下面这五条都链 archive（上游的写法是 core + archive）。原因不是它们**必须**压缩容器：
+# `floor_window_cache` 与 `cull_cost_probe` 会无条件调 `archive::install()`（注册解码后端），
+# 另三条只是跟着上游链。所以 `ADOFAI_LIB_ARCHIVE=OFF` 时它们一起跳过 —— 与
+# level_parse_parity 同一口径（那边也是"按设计要用 archive"）。
+# 只链 archive 不重复链 core：core 经 archive 的 PUBLIC 依赖传递进来，两次会出重复库。
+if(ADOFAI_LIB_ENABLE_ARCHIVE)
+    # angleData 的紧凑存储：释放前后逐位对拍 + 反面对照。**它也是导出模块的上游依赖**：
+    # LevelJsonWriter 现在走 angleAt()/angleCount()，角度压缩之后依然写得出（见 export 那一段）。
+    add_executable(adofai_angle_store_test angle_store_test.cpp)
+    target_link_libraries(adofai_angle_store_test PRIVATE ADOFAI::archive)
+    add_test(NAME angle_store
+        COMMAND adofai_angle_store_test "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai"
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_glide.adofai")
+
+    # 按块物化的每砖 provider：丢掉密集 tiles 之后逐层对拍 + 反面对照
+    add_executable(adofai_floor_window_cache_test floor_window_cache_test.cpp)
+    target_link_libraries(adofai_floor_window_cache_test PRIVATE ADOFAI::archive)
+    add_test(NAME floor_window_cache
+        COMMAND adofai_floor_window_cache_test "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai"
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_glide.adofai")
+
+    # Timeline 的每 4096 层锚点与全量数组逐位对拍
+    add_executable(adofai_timeline_anchor_test timeline_anchor_test.cpp)
+    target_link_libraries(adofai_timeline_anchor_test PRIVATE ADOFAI::archive)
+    add_test(NAME timeline_anchor
+        COMMAND adofai_timeline_anchor_test "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai"
+                "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_glide.adofai")
+
+    # ④ 粗块 AABB 索引：与全扫逐元素对拍（含反面对照）。两个都只用 render/ 的**纯头文件**，不碰 GL。
+    add_executable(adofai_cull_index_test cull_index_test.cpp)
+    target_include_directories(adofai_cull_index_test PRIVATE "${ADOFAI_LIB_SRC_ROOT}/render")
+    target_link_libraries(adofai_cull_index_test PRIVATE ADOFAI::archive)
+    add_test(NAME cull_index
+        COMMAND adofai_cull_index_test "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai")
+
+    # 剔除策略对比探针（④）：同一份真实数据下比三种候选集策略的候选数/漏砖数/耗时/索引体积。
+    # 它主要打印数字留痕，断言很少 —— 挂成用例是为了不让它烂掉。
+    add_executable(adofai_cull_cost_probe cull_cost_probe.cpp)
+    target_link_libraries(adofai_cull_cost_probe PRIVATE ADOFAI::archive)
+    add_test(NAME cull_cost
+        COMMAND adofai_cull_cost_probe "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai"
+                --zooms 25,100 --repeat 3)
 endif()
 
 # 解析/加载的各种上限（core 的 CountLimits）
@@ -221,6 +295,7 @@ if(ADOFAI_LIB_ENABLE_EXPORT)
                     "${CMAKE_CURRENT_SOURCE_DIR}/data/smoke_level.adofai"
                     "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_dict.adofai"
                     "${CMAKE_CURRENT_SOURCE_DIR}/charts/diag_midspin.adofai"
+                    --src-dir "${CMAKE_SOURCE_DIR}"
                     "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f19_all_action_types.json"
                     "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f24_positiontrack_variants.json"
                     "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f25_setspeed_variants.json"

@@ -173,7 +173,7 @@ bool writeTo(Format f, const LevelData& level, std::vector<uint8_t>& out, std::s
     err.clear();
     Report rep;
     rep.format = f;
-    rep.angleCount = level.angleData.size();
+    rep.angleCount = (uint64_t)level.angleCount();
     rep.actionCount = level.actions.size();
 
     if (f == Format::Adocao) {
@@ -181,6 +181,15 @@ bool writeTo(Format f, const LevelData& level, std::vector<uint8_t>& out, std::s
         err = "本库配置为 ADOFAI_LIB_ARCHIVE=OFF：`.adocao` 的打包器在 archive 模块里，写不了";
         return false;
 #else
+        // 上游的 `packLevel` 直接读**密集**的 `angleData`（不像我们走 angleAt()），所以
+        // 调过 `releaseAngleData()` 之后它只会写出一列空角度。这里提前明确拒绝，而不是
+        // 等自检报一句含糊的"指纹不一致"。
+        if (level.anglesCompacted()) {
+            err = "`.adocao` 的打包器只读密集 angleData，而这份 LevelData 已经把角度换成紧凑"
+                  "存储（releaseAngleData）—— 改用 .adofai / .adofai.xz / .adofai.zst，"
+                  "或者用没压缩过角度的那份再打 .adocao";
+            return false;
+        }
         if (!adocao::packLevel(level, out, err)) {
             if (err.empty()) err = "packLevel 失败";
             return false;
@@ -211,7 +220,8 @@ bool writeTo(Format f, const LevelData& level, std::vector<uint8_t>& out, std::s
             // （解析收尾 `finishLoad` 一定会把 pathData 推成 angleData），而写出的文件里只有
             // pathData —— 重新解析会补出那一份推导结果，于是角度那一段必然"不一致"。
             // 那种输入下仍然要求"读得回来"，但跳过指纹比对（这不是丢数据，是补数据）。
-            const bool derivedAnglesPending = level.angleData.empty() && !level.pathData.empty();
+            const bool derivedAnglesPending =
+                level.angleCount() == 0 && !level.pathData.empty();
             LevelData back;
             if (!back.loadFromBuffer(json.data(), json.size(), nullptr, /*exportOnly=*/true)) {
                 out.clear();

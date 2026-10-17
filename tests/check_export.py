@@ -18,12 +18,18 @@ C++ 的 export_roundtrip_test 验的是"写方 ∘ 读方"自洽；这里补的�
   8. 端到端闭环：把导出的 `.adofai.xz` / `.zst` / `.adocao` 再喂回库，必须能加载。
 
 用法：
-  check_export.py <headless 可执行> <out-dir> <archive:on|off> <level> [<level>...]
+  check_export.py <headless 可执行> <out-dir> <archive:on|off> [--src-dir <本库源码根>]
+                  <level> [<level>...]
+
+`--src-dir` 给了的话，`.adocao` 的版本号会从 `src/adofai/archive/AdocaoFormat.hpp` 里的
+`kVersion` 读出来对账（而不是在这里写死一个数字 —— 格式升版是上游的正常动作，写死会让这条
+检查每次升版都假红；而从源码读仍然抓得住"写方与读方不是同一个版本"这种真错）。
 """
 
 import json
 import lzma
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -171,17 +177,51 @@ def export_via_cli(binary, level, out_path):
     return rc, out, err
 
 
+def adocao_version_from_source(src_dir):
+    """从 AdocaoFormat.hpp 读 `kVersion`（见文件头的说明）。读不到就返回 None。"""
+    hpp = os.path.join(src_dir, "src", "adofai", "archive", "AdocaoFormat.hpp")
+    try:
+        with open(hpp, encoding="utf-8") as f:
+            for line in f:
+                m = re.search(r"kVersion\s*=\s*(\d+)", line)
+                if m:
+                    return int(m.group(1))
+    except OSError:
+        return None
+    return None
+
+
 def read_bytes(path):
     with open(path, "rb") as f:
         return f.read()
 
 
 def main():
-    if len(sys.argv) < 5:
-        print("usage: check_export.py <headless> <out-dir> <archive:on|off> <level> [...]")
+    argv = sys.argv[1:]
+    src_dir = None
+    pos = []
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--src-dir":
+            if i + 1 >= len(argv):
+                print("FAIL: --src-dir 后面要跟路径")
+                return 2
+            src_dir = argv[i + 1]
+            i += 2
+        else:
+            pos.append(argv[i])
+            i += 1
+    if len(pos) < 4:
+        print("usage: check_export.py <headless> <out-dir> <archive:on|off> "
+              "[--src-dir <本库源码根>] <level> [...]")
         return 2
-    binary, out_dir, archive_expect = sys.argv[1], sys.argv[2], sys.argv[3]
-    levels = sys.argv[4:]
+    binary, out_dir, archive_expect = pos[0], pos[1], pos[2]
+    levels = pos[3:]
+
+    want_version = adocao_version_from_source(src_dir) if src_dir else None
+    if want_version is None:
+        print("note: 没给 --src-dir（或 AdocaoFormat.hpp 里找不到 kVersion），"
+              "跳过 .adocao 的版本对账（「读得回来」那条仍然是权威判据）")
 
     if not os.path.isfile(binary):
         fail(f"找不到可执行文件 {binary}")
@@ -342,12 +382,13 @@ def main():
                 else:
                     version, = struct.unpack_from("<H", raw, 4)
                     file_size, = struct.unpack_from("<Q", raw, 12)
-                    if version != 2:
-                        fail(f"{tag}: .adocao 的 version 是 {version}，期望 2")
+                    if want_version is not None and version != want_version:
+                        fail(f"{tag}: .adocao 的 version 是 {version}，"
+                             f"而 AdocaoFormat.hpp 的 kVersion 是 {want_version}")
                     elif file_size != len(raw):
                         fail(f"{tag}: .adocao 头里写着 {file_size} 字节，实际 {len(raw)}")
                     else:
-                        print(f"OK: {tag} .adocao 头自洽（ADO1 v2 / {len(raw)} 字节）")
+                        print(f"OK: {tag} .adocao 头自洽（ADO1 v{version} / {len(raw)} 字节）")
                 rc2, _, err2 = run([binary, adocao_path])
                 if rc2 != 0:
                     fail(f"{tag}: 导出的 .adocao 自己读不回来：{err2.strip()}")

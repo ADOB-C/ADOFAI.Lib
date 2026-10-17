@@ -5,13 +5,47 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=ad09d05
-ADOCAO_COMMIT_FULL=ad09d056e9dc8dbdf45a95f5c72f6aa625aac294
-ADOCAO_COMMIT_DATE=2026-10-11
-# 本次同步要点：新增 archive/AdocaoDiagnostics（v3 判据统计）、core/util/CountLimits.hpp、
-# 12 张 diag 谱 + 5 个新用例（adocao_diagnostics / limits / position_offset / raw_pcm / hz_grid）；
-# **并处理了删除** —— 上游删掉了 assets/shaders/icon.{frag,vert}（图标并入 tile.vert 的几何展开），
-# 所以镜像侧也要删（`rsync --delete`），这是以往同步流程没覆盖过的情况。
+ADOCAO_COMMIT=52fc91d
+ADOCAO_COMMIT_FULL=52fc91d3b18720d15e183c380a4acc6a1068a057
+ADOCAO_COMMIT_DATE=2026-10-16
+# 本次同步要点（74 个提交，镜像区 66 个文件、+8191/−418 行）：
+#
+#  1. **`.adocao` v3**：列改分块容器（每 4096 元素一块、块内自选编码）+ `Derived` 段
+#     （每 4096 层的续算快照）+ 每砖结构窗口化。
+#     → archive 新增 AdocaoBlocked / AdocaoCheckpoints / AdocaoWindow，kVersion 2 → 3；
+#       Adocao{Format,Writer,Reader} 全部改动。
+#  2. **`.ilytx`**（Re_ADOJAS 自研容器 = xz(tar(ilybin))）：archive 新增 Ilybin / Ilytx。
+#     core 的 ByteSource 只多认一层"解压后是不是 tar"（isTarPayload），拆 tar / 解 ilybin
+#     都在 archive 里 —— 与"core 不认识容器"的依赖倒置一致。
+#  3. **线程池换成了 Scheduler**：`core/util/ThreadPool.{hpp,cpp}` 上游已删除，替代品是
+#     `util/Scheduler.{hpp,cpp}` + header-only 的 `util/Profile.hpp`。库侧 core target 的
+#     源文件列表跟着换（这是库自己的 CMakeLists，不镜像）。
+#  4. **角度与每砖的紧凑化**：`LevelData` 新增 `AngleStore`（角度换字典 + 位打包）、
+#     `FloorWindowCache`（`tiles` 按块物化，可丢掉密集数组）、以及 `angleAt()/angleCount()/
+#     tileCount()/tilePositionAt()` 这些**运行期唯一口径**的访问器。默认加载行为不变
+#     （只有 app 侧的 LevelLoader 才主动调 releaseAngleData / dropTilesArray），
+#     但库的导出模块因此必须改走 `angleAt()` —— 见下面第 8 条。
+#  5. render：新增 header-only 的 `BitSpan.hpp` / `CullIndex.hpp`（粗块 AABB 剔除索引），
+#     TileMesh/TileShape 随之改动。
+#  6. tests：新增 10 条镜像用例并全部挂上（adocao_blocked / adocao_checkpoints / adocao_window /
+#     ilytx / bit_span / angle_store / floor_window_cache / timeline_anchor / cull_index /
+#     cull_cost），外加 9 个 `.ilytx` 夹具与生成脚本 gen_ilytx_fixtures.mjs。
+#     没挂的是 `font_cjk`（它要 adocao_imgui —— 本库没有 ImGui）。
+#  7. **rsync 白名单的一个洞**：文档里的 `for d in core archive audio …` 会把上游的
+#     `core/map/**`（出图，PLAN §3 明确不进库）一起拖进来。这次真踩了，已删掉并在
+#     CONTRIBUTING/AGENTS/nightly 的 rsync 里加上 `--exclude='map/'`。
+#  8. 导出模块（库自有）跟着上游改了两处：角度读写改用 `angleCount()/angleAt()`
+#     （角度被压缩之后照样写得出来），以及 `.adocao` 在"角度已压缩"时**明确拒绝**
+#     （上游 packLevel 仍直读密集数组）。护栏没白建：这次是 `export_independent` 先红的
+#     —— 它把 `.adocao` 的版本号写死成 2，格式升到 v3 当场暴露；现在改成从
+#     AdocaoFormat.hpp 读 `kVersion` 对账。
+#
+# 上游仍有的两个警告（**不是库改出来的**，留给上游）：
+#   * archive/AdocaoWindow.cpp:94  `v.frameTable + b / 0 * 0` —— 除以零的"占位"表达式（UB，
+#     clang 报 -Wdivision-by-zero）。那行只被 `(void)e;` 吃掉，删掉即可。
+#   * archive/LevelArchive.cpp / AdocaoColumns.cpp 的 -Wswitch（延续上一轮的记录）。
+#
+# 上一次同步：ad09d05（v3 判据统计 + 12 张 diag 谱 + 5 个用例；首次处理"上游删除"）。
 #
 # 上一次跨了一大段：上游加了 **`.adocao` 二进制容器（v2 列编码器）** ——
 #   archive/{AdocaoFormat.hpp,AdocaoColumns.{hpp,cpp},AdocaoWriter.{hpp,cpp},AdocaoReader.{hpp,cpp}}

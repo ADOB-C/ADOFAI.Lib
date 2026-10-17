@@ -291,6 +291,49 @@ int main(int argc, char** argv)
     }
 #endif
 
+    // ── 角度紧凑存储（上游 2026-10 加的 `releaseAngleData`）──────────────────
+    // 压缩成功后 `angleData` 会被 swap 掉、值只留在 AngleStore 里。导出必须照样写得出同一批
+    // 角度 —— 所以 LevelJsonWriter 走的是 `angleCount()/angleAt()`，不是直读 `angleData`
+    // （上游 LevelData.hpp 的口径：「运行期读角度一律走 angleAt()」）。
+    // 顺带钉住另一件事：`.adocao` 在上游的 `packLevel` 里仍直读密集数组，所以这种状态下
+    // 必须先**明确拒绝**，而不是悄悄写出一列空角度。
+    {
+        int compacted = 0, refused = 0;
+        for (int ai = 2; ai < argc; ++ai) {
+            const std::string input = argv[ai];
+            LevelData a;
+            if (!a.loadFromFile(input)) continue;        // 上面已经报过了
+            const uint64_t before = exporter::modelDigest(a);
+            std::string cerr;
+            if (!a.releaseAngleData(&cerr)) { refused++; continue; }   // 字典主导 / 不划算
+            ++compacted;
+            if (exporter::modelDigest(a) != before)
+                fail(input + "（角度已压缩）", "releaseAngleData 之后指纹变了（不该）");
+
+            const std::string p = outDir + "/" + stemOf(input) + ".compacted.adofai";
+            std::string err;
+            if (!exporter::exportLevel(a, exporter::Format::Adofai, p, err)) {
+                fail(input + "（角度已压缩）", "导出 .adofai 失败：" + err);
+                continue;
+            }
+            LevelData back;
+            if (!back.loadFromFile(p)) {
+                fail(input + "（角度已压缩）", "导出物读不回来");
+            } else if (exporter::modelDigest(back) != before) {
+                fail(input + "（角度已压缩）", "导出物重新解析后指纹不一致（角度没写全？）");
+            }
+
+            std::vector<uint8_t> bytes;
+            std::string e2;
+            if (exporter::writeTo(exporter::Format::Adocao, a, bytes, e2))
+                fail(input + "（角度已压缩）", "还写得出 .adocao（上游打包器只读密集数组）");
+            else if (e2.empty())
+                fail(input + "（角度已压缩）", "拒绝 .adocao 却没给原因");
+        }
+        std::printf("角度压缩：%d 个输入压缩后验过 .adofai；%d 个不划算被跳过\n", compacted,
+                    refused);
+    }
+
     std::printf("\n%d 次导出·往返·确定性检查，%d 处失败\n", g_checked, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

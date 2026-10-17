@@ -17,11 +17,15 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 
 ## Features
 
-- **解析** `.adofai`：明文，`.adofai.xz` / `.adofai.zst` 压缩容器，以及本项目的
-  **`.adocao` 二进制容器**（列式编码：每列按取值基数选字典/常量/差分/位打包，段级可选 zstd；
-  实测把 19.58 MB 的谱压到 6 KB 级 —— 逐位无损、坏数据响亮失败，格式见上游 `docs/adocao-format.md`）
+- **解析** `.adofai`：明文，`.adofai.xz` / `.adofai.zst` 压缩容器，本项目的
+  **`.adocao` 二进制容器**（v3：列按 4096 元素**分块**、块内自选字典/常量/差分/位打包，
+  外加每 4096 层一份续算快照；实测把 19.58 MB 的谱压到 6 KB 级 —— 逐位无损、坏数据响亮失败，
+  格式见上游 `docs/adocao-format.md`），以及 Re_ADOJAS 的 **`.ilytx`**（xz(tar(ilybin))）
 - 容器一律按 **magic** 识别，不看扩展名（改过名/抹掉扩展名照样能读）
 - **时间线**：逐层起始时刻、时长、BPM 传播、中旋砖（`angleData = 999`）、SetSpeed/Twirl
+- **大谱不靠蛮力**：角度可换**紧凑存储**（字典 + 位打包，MYC 实测 54 MB → 4.8 MB）、每砖结构
+  可按块物化（`tilePositionAt`）、剔除可用**粗块 AABB 索引**（`render/CullIndex`）——
+  三者都是"丢掉密集数组之后照样逐位正确"，各有独立的逐位对拍用例
 - **位置解算**：任意时刻的双星位置，与游戏里同一套解算
 - **打拍音**：合成 / 混音 / WAV 导出（忠实度对齐 `HitSoundGenerator`）
 - **导出谱面**：`.adofai`（明文 JSON）、`.adofai.xz`、`.adofai.zst`、`.adocao`
@@ -35,7 +39,7 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 16/16
+ctest --test-dir build          # 默认 26/26
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
@@ -245,7 +249,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 16 条 / render=ON 20 条**（随模块开关增减）：
+**render=OFF 26 条 / render=ON 30 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|
@@ -255,6 +259,10 @@ ctest --test-dir build
 | `archive_container` | `ARCHIVE=ON` 读得动 `.xz`/`.zst`；`OFF` 干净失败 |
 | `audio_hitsound_mix` | 用现场合成的音色走一遍真混音 |
 | `audio_hitsound_rules` | 打拍音铁律的源码护栏（必须饱和加法、不许 Nyquist 去重）|
+| `adocao_blocked` / `adocao_checkpoints` / `adocao_window` | `.adocao` v3：分块列的逐位往返（含 4096 边界、-0.0/NaN）+ "同质/字典主导/白噪声列上不许赢"；`Derived` 段的续算快照必须与全谱一次算**逐位**相同；按块重算的 Tile/BPM/起始时刻必须与全量加载逐位相同 |
+| `ilytx` | Re_ADOJAS 的 `.ilytx`（xz(tar(ilybin))）与参照谱逐位等价；紧凑模式的 f32 误差；三个坏样本必须干净失败 |
+| `angle_store` / `floor_window_cache` / `timeline_anchor` | 角度紧凑存储、每砖按块物化、Timeline 每 4096 层锚点 —— 都是"丢掉密集数组之后与全量逐位相同"，各带反面对照 |
+| `bit_span` / `cull_index` / `cull_cost` | 位图区间置值、粗块 AABB 索引与全扫逐元素对拍、三种剔除策略的候选数/漏砖数/耗时留痕 |
 | `export_roundtrip` | 四种格式的导出都必须**读得回来且建模字段逐位相同**；同输入两次导出逐字节相同；明文导出还要老解析路径也读得动；`.adocao` 的 pack 与原件的 pack 逐字节相同。**同一条测试就是导出模块的漂移护栏**（上游给模型加字段而导出没跟上 → 红）|
 | `export_independent` | 独立验收：Python 的 `json` / `lzma` 说了算（第三方实现），一份**另写的**建模投影对比，magic/头自洽，截断与改坏必须失败 |
 | `lzma_mt_compat` | lzma_mt 内存字段的跨版本选择（5.4 起字段改名）——纯编译期，不依赖压缩库 |

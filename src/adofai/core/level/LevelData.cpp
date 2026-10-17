@@ -1,8 +1,9 @@
 #include "LevelData.hpp"
+#include "FloorWindow.hpp"   // ③ 切片 4：按块物化缓存（~LevelData 需要完整类型）
 #include "JsonCleaner.hpp"
 #include "ByteSource.hpp"   // 容器识别 + 解压后端接口（实现见 archive/）
 #include "core/util/Logger.hpp"
-#include "core/util/ThreadPool.hpp"
+#include "core/util/Scheduler.hpp"
 #include <fstream>
 #include <sstream>
 #include <cstdio>
@@ -166,7 +167,18 @@ inline bool parseNumber(const char*& p, const char* e, double& out) {
             ++q;
             if (q < e && (*q == '+' || *q == '-')) ++q;
             if (q < e && *q >= '0' && *q <= '9') { while (q < e && *q >= '0' && *q <= '9') ++q; }
-            else q = save;                      // 光秃秃的 e / e+ 之后没有数字：不算指数
+            else if (q >= e) {
+                // 缓冲区正好在 e / e± 之后用完：**这个数字还没结束**（指数位可以更长），
+                // 绝不能退回到 save 把 "4.547473508864641" 当成终值提交 —— 那是**静默错值**，
+                // 而且残留的 e 会让流式窗口把整窗原样 carry 走（下一窗第一个字节就是 e，
+                // parseNumber 立刻失败 -> carry = 整个半窗）-> stuck -> 静默回退整份解压。
+                // 实测：Unity.wav_rate 默认 4 MB 半窗 3/3 拒收、8192 KB 才收（docs/2e9.md §3）。
+                // 返回 false = "这里没有一个完整的数字"：区间调用方会放弃快路径（走 DOM），
+                // 流式窗口会当作"需要更多数据"把这一项 carry 到下一窗重放。
+                p = start;
+                return false;
+            }
+            else q = save;                      // 光秃秃的 e / e+ 之后不是数字：不算指数
         }
         // 注意：**不能**把"token 触到 e"当成截断。本函数的两个调用方（angleData 区间、action 字段）
         // 传进来的 e 都是**该值/该区间的真实末尾**（来自 skipValue / 区域括号），所以一个
@@ -655,16 +667,17 @@ inline bool parseActionRegionParallel(const char* b, const char* fileEnd,
     std::atomic<bool> failed{false};
     unsigned poolThreads = 0;
     {
-        ThreadPool pool((unsigned)n - 1);                // parallelFor 会让调用线程也干活
-        poolThreads = pool.threadCount() + 1;            // +1 = 调用线程也参与
-        pool.parallelFor(0, n, [&](size_t lo, size_t hi) {
+        // ② 并行模型：不再**每次调用新建线程池**（那是"五套机制"里最浪费的一套 ✗），
+        // 统一走 `Scheduler`（Background 车道：加载期本来就不与帧关键任务抢）。
+        poolThreads = Scheduler::instance().workers() + 1;   // +1 = 调用线程也参与
+        Scheduler::instance().parallelFor(n, 1, Lane::Background, [&](size_t lo, size_t hi) {
             for (size_t i = lo; i < hi && !failed.load(std::memory_order_relaxed); i++) {
                 size_t k = parseActionRangeInto(bounds[i], bounds[i + 1],
                                                 out.data() + base + slots[i], counts[i]);
                 if (k == kFail) failed.store(true, std::memory_order_relaxed);
                 else kept[i] = k;
             }
-        }, 1);
+        });
     }
     const double parseMs = msSince(tParse);
     if (dbg) std::fprintf(stderr, "[parse] 找切分点 %.1f ms  并行解析 %.1f ms  段数=%zu 线程=%u  failed=%d\n",
@@ -705,6 +718,7 @@ struct WindowParser {
     std::string pathText;
     std::string settingsText;
     bool failed = false;
+    bool tarContainer = false;           // .ilytx：解压后是 tar，不是 JSON（见 run() 顶部）
     const char* failAt = nullptr;       // 诊断用：失败发生在窗口里的哪个位置
     const char* failWhy = "";
     long failA = -1, failB = -1;         // 诊断用：附加数字（如对象长度 / 窗口剩余）
@@ -903,6 +917,13 @@ struct WindowParser {
             if (dbg) std::fprintf(stderr, "[win] 首块就失败 failed=%d err=%s\n", (int)stream.failed(), stream.error().c_str());
             return stream.failed() ? -1 : 0;
         }
+        // `.ilytx` = xz(tar(…))：压缩层认不出来，解开才知道载荷是 tar 而不是 JSON。
+        // 它不是"结构解析失败"，而是**这条路根本不适用** —— 明确让路，由 archive 的
+        // ilytx 解码接手（LevelData 会退回整份解压那条路，理由走 tarContainer 打印）。
+        if (isTarPayload(stream.data(), stream.size())) {
+            tarContainer = true;
+            return 0;
+        }
         const char* p = stream.data();
         const char* end = p + stream.size();
         static const char* const kStateName[] = {"Members", "InAngles", "InActions", "InSettings", "InPath", "InSkip", "Done"};
@@ -935,13 +956,20 @@ struct WindowParser {
             const bool resumable = state == State::InSettings || state == State::InPath || state == State::InSkip;
             const char* carryFrom = resumable ? end : itemStart;
             const size_t consumed = (size_t)(carryFrom - p);   // 诊断用：相对本次调用起点
-            if (dbg) std::fprintf(stderr, "[win] 换窗 state=%d 已提交=%zu carry=%zu 窗口=%zu\n",
-                                  (int)state, consumed, stream.size() - consumed, stream.size());
+            if (dbg) {
+                // 两个数都要打：`本次已提交` 相对本次 step 调用起点，`绝对消费` 相对窗口起点。
+                // 只看前者会把"窗口中途转移后 itemStart 落回窗口开头"误读成"一点没消费"。
+                const size_t absConsumed = (size_t)(carryFrom - stream.data());
+                const size_t carryN = stream.size() - absConsumed;
+                const int show = (int)(carryN < 24 ? carryN : 24);
+                std::fprintf(stderr, "[win] 换窗 state=%d 本次已提交=%zu 绝对消费=%zu carry=%zu 窗口=%zu 首=%.*s\n",
+                             (int)state, consumed, absConsumed, carryN, stream.size(), show, carryFrom);
+            }
             // consume() 要的是"窗口内偏移"，不是"相对本次调用起点的字节数"（第一次调用两者
             // 恰好相等，所以这个错被掩盖过：窗口中途状态转移后 carry 会退到已解析对象中间）。
             stream.consume((size_t)(carryFrom - stream.data()));
             if (!stream.next()) {
-                if (dbg) std::fprintf(stderr, "[win] 取下一块失败 state=%d stuck=%d failed=%d err=%s 已消费=%zu 块内=%zu\n",
+                if (dbg) std::fprintf(stderr, "[win] 取下一块失败 state=%d stuck=%d failed=%d err=%s 本次已提交=%zu 块内=%zu\n",
                                       (int)state, (int)stream.stuck(), (int)stream.failed(),
                                       stream.error().c_str(), consumed, stream.size());
                 return stream.failed() ? -1 : 0;
@@ -1124,11 +1152,19 @@ bool LevelData::loadFromBuffer(const char* data, size_t len, ProgressCb onProgre
                         return finishLoad(onProgress, exportOnly);
                     }
                 }
-                // rc == 0 或 settings 解析失败 -> 落到整份解压，行为与以前完全一致
+                // rc == 0 或 settings 解析失败 -> 落到整份解压，行为与以前完全一致。
+                // 但**不许静默**：回退本身只会在内存峰值与耗时上表现出来，2026-10 那个
+                // "大谱上窗口路径其实一次都没被用上"就是这么藏了一轮（docs/2e9.md §3）。
+                const char* why = wp.tarContainer ? "ilytx（tar 容器）只能整份解压"
+                                : wp.failed       ? (wp.failWhy && *wp.failWhy ? wp.failWhy : "结构解析失败")
+                                : stream->stuck() ? "单个值大于半窗"
+                                                  : "流式结构不可解析（需要更多数据 / 已到流末尾）";
                 if (requireWindow) {
-                    LOG_E("windowed parse declined the stream (test hook ADOCAO_WINDOW_REQUIRE)");
+                    LOG_E("windowed parse declined the stream (test hook ADOCAO_WINDOW_REQUIRE): %s", why);
                     return false;
                 }
+                LOG_W("流式窗口放弃（%s）—— 退回整份解压（半窗 %zu KB，多花一份整份文本的内存）",
+                      why, half >> 10);
             }
         }
         if (onProgress) onProgress(0.05f, "Decompressing level...");
@@ -1525,11 +1561,17 @@ void LevelData::processActions() {
     tileHasSetSpeed.assign(n, false);
     bookmarkFloors.clear();
 
-    struct SS { float multiplier = 0.0f; float bpm = 0.0f; bool isMultiplier = false; };
+    // ③ 2026-10-16：SetSpeed 改成**事件表**（旧的是"每层一个槽"的 12 B/层稠密数组）：
+    //   ① 同层可以有**多条** SetSpeed（先绝对 `Bpm` 再 `Multiplier` 是常见写法），旧结构里
+    //      第二条会把第一条的字段覆盖掉 → 绝对值丢失。MYC 第 27473 层正是（Bpm 8000 + ×2）：
+    //      旧代码得 72000、正确是 16000（`Timeline` 逐条按文件序应用，一直是对的）。
+    //   ② 那张稠密数组只要谱里有一条 SetSpeed 就 `resize(n)`（MYC 315 条事件白占 81 MB）。
+    struct SSEv { int floor = 0; float val = 0.0f; bool isMultiplier = false; };
+    std::vector<SSEv> ssEvents;
     // 按需分配：没有任何 SetSpeed 事件时这 n x 12 B 是白占的（实测 25 万层的无害谱上，
     // 峰值快照里就有一块 250001 x 12 = 3,000,012 B 的分配）。1e8 层就是 1.2 GB。
     // 空 vector 与原来逐位等价：默认构造的 SS 全 false/0，下面那个逐层循环体什么都不做。
-    std::vector<SS> setSpeedByFloor;
+
 
     // 每个 SetHitsound 事件一条。原来存 std::string（40 B/条），改成存驻留 id：12 B/条，
     // 而 2^31 层 × 0.9 事件/层时这是 72 GB → 18 GB 的差别（见 docs/scale-1e8-to-2e9.md §13）。
@@ -1550,9 +1592,7 @@ void LevelData::processActions() {
             tileHasTwirl[floor] = true; break;
         case FastAction::SetSpeed:
             tileHasSetSpeed[floor] = true;
-            if (setSpeedByFloor.empty()) setSpeedByFloor.resize((size_t)n);   // 第一次遇到才分配
-            { SS& ev = setSpeedByFloor[floor]; ev.isMultiplier = a.flag;
-              if (a.flag) ev.multiplier = a.val1; else ev.bpm = a.val1; }
+            if (floor >= 0 && floor < n) ssEvents.push_back({floor, a.val1, a.flag});
             break;
         case FastAction::PositionTrack:
             tilePositionOffsets[floor] = {a.val1, a.val2, a.flag}; break;
@@ -1577,10 +1617,17 @@ void LevelData::processActions() {
     float runningBPM = settings.bpm;
     // 空 = 本谱一条 SetSpeed 都没有：tileBPMs 上面已经 assign 成全 settings.bpm，
     // 而原循环在这种情况下本来就只写回 settings.bpm —— 所以整段跳过是逐位等价的。
-    if (!setSpeedByFloor.empty()) {
+    if (!ssEvents.empty()) {
+        // 同层多条必须按**文件序**应用（与 `Timeline::precalculateTiming` 的 flatActions 一致）：
+        // 稳定排序只按 floor，同层保持原顺序。
+        std::stable_sort(ssEvents.begin(), ssEvents.end(),
+                         [](const SSEv& a, const SSEv& b) { return a.floor < b.floor; });
+        size_t si = 0;
         for (int i = 0; i < n; i++) {
-            if (setSpeedByFloor[i].isMultiplier) runningBPM *= setSpeedByFloor[i].multiplier;
-            else if (setSpeedByFloor[i].bpm > 0.0f) runningBPM = setSpeedByFloor[i].bpm;
+            while (si < ssEvents.size() && ssEvents[si].floor <= i) {
+                const SSEv& e = ssEvents[si++];
+                if (e.isMultiplier) runningBPM *= e.val; else runningBPM = e.val;
+            }
             tileBPMs[i] = runningBPM;
         }
     }
@@ -1654,10 +1701,29 @@ void LevelData::applyPositionTrackOffsets() {
     }
 }
 
+LevelData::~LevelData() { delete m_winCache; m_winCache = nullptr; }
+
+bool LevelData::releaseAngleData(std::string* err) {
+    const size_t rawBytes = angleData.size() * sizeof(double);
+    std::string e;
+    if (!m_angleStore.build(angleData, e)) { if (err) *err = e; return false; }
+    // 护栏：小谱 / 取值集很大时，**字典本体**可能比原数组还大（实测 diag_glide：1024 取值
+    // → 10 bit/层 + 8 KB 字典 = 9.25 B/层 > 8 B/层）。不划算就原样保留。
+    if (m_angleStore.bytes() >= rawBytes) {
+        m_angleStore = AngleStore{};
+        if (err) *err = "紧凑存储不比原数组小（字典占主导）";
+        return false;
+    }
+    std::vector<double>().swap(angleData);     // 字典 + 位打包已经能逐位还原
+    return true;
+}
+
 void LevelData::releaseMemory() {
     // Free arrays no longer needed after loading completes
     actions.clear(); actions.shrink_to_fit();
-    tilePositionOffsets.clear();
+    // ⚠️ 窗口化时**不能**清 `tilePositionOffsets`：provider 物化块要用它合成 PositionTrack
+    // （MYC 实测 26,480 条 ≈ 1.6 MB；非窗口化时照旧清掉）
+    if (!tilesWindowed()) tilePositionOffsets.clear();
     tileHitsounds.clear();
     tileHitsoundVolumes.clear(); tileHitsoundVolumes.shrink_to_fit();
     // atStates 只有 Timeline::build() 用（它在本函数之前就跑完了），运行时只靠 hasAtStates 判定，

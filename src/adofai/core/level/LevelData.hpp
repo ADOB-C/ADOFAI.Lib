@@ -10,6 +10,8 @@
 #include <functional>
 #include <rapidjson/document.h>
 
+#include "core/level/AngleStore.hpp"   // ③ 切片 4：angleData 的紧凑存储
+
 // Parsed .adofai level file
 // 驻留实现：互斥量与 thread-local 缓存都在 .cpp 文件作用域，按驻留表地址做缓存键；
 // LevelData 里因此没有 mutex / thread_local 数据成员（保持可拷贝，MSVC 也接受）。
@@ -17,6 +19,9 @@
 namespace adofai {
 
 uint16_t internActionStrIn(std::vector<std::string>& table, const std::string& v);
+
+struct LevelData;
+class FloorWindowCache;
 
 struct LevelData {
     struct Settings {
@@ -76,6 +81,47 @@ struct LevelData {
         return a.strId < actionStrTable.size() ? actionStrTable[a.strId] : actionStrTable[0];
     }
 
+    // ③ 切片 4（第 1 步）：**运行期读者不要再直接碰 `tiles[i]`** —— `tiles` 现在会按块物化，
+    // 这两个访问器就是那层接口。未窗口化时直读密集数组（行为逐位不变）。
+    //
+    // ⚠️ **按值**返回（不是引用）：物化下一块会替换窗口缓存，引用会失效；按值返回也顺带
+    // 让"同时持有两块里的位置"（`PositionSolver` 就同时读 tileIdx 与第 0 层）天然安全。
+    // ⚠️ **不能**只写 `tiles.size()`：丢过密集数组之后它是 0，而全运行期（mesh 装配、capture、
+    // jump、最近砖搜索）都拿它当"谱面砖数"。窗口化时由 provider 记着那个数。
+    int64_t tileCount() const;
+    // 可选 `wc`：并行剔除时传**本线程自己的克隆**（见 `FloorWindowCache::clone()`）；
+    // 不传 = 用共享缓存（单线程路径，语义与以前逐位相同）。
+    std::array<double, 2> tilePositionAt(int64_t i, FloorWindowCache* wc = nullptr) const;
+    float tileDirectionAt(int64_t i, FloorWindowCache* wc = nullptr) const;
+    // 本线程的私有窗口克隆（首次调用克隆一次，随线程存活；level 换了会自动重建）
+    FloorWindowCache* threadWindowCache() const;
+    // ③ 切片 4：运行期读角度一律走 `angleAt()` —— 加载收尾会把 `angleData` 换成**位精确紧凑存储**
+    // （字典 + 位打包下标；MYC 实测 45 个取值 → 0.75 B/层，54 MB → 4.8 MB）。
+    // 加载期（解析 / Timeline::build / computeCheckpoints / TileMesh::build）仍读原数组。
+    double angleAt(int64_t i) const {
+        if (m_angleStore.valid()) return m_angleStore.at(i);
+        return (i >= 0 && (size_t)i < angleData.size()) ? angleData[(size_t)i] : 180.0;
+    }
+    int64_t angleCount() const {
+        return m_angleStore.valid() ? m_angleStore.size() : (int64_t)angleData.size();
+    }
+    // 把 `angleData` 换紧凑存储（取值集过大则失败、原数组保留）
+    bool releaseAngleData(std::string* err = nullptr);
+    bool anglesCompacted() const { return m_angleStore.valid(); }
+    size_t angleStoreBytes() const { return m_angleStore.bytes(); }
+    int64_t angleStoreUnique() const { return m_angleStore.uniqueCount(); }
+    int angleStoreBitsPerIndex() const { return m_angleStore.bitsPerIndex(); }
+    void setAngleForTest(int64_t i, double v) { m_angleStore.setForTest(i, v); }
+
+    // 建"按块物化"缓存（加载收尾调用；失败就保持密集数组）
+    bool buildFloorWindowCache(const std::vector<double>& startTimes,
+                               const std::vector<float>& bpms,
+                               const std::vector<bool>& isCW, std::string* err = nullptr);
+    bool dropTilesArray();          // 丢掉密集 tiles（成功 = 之后走窗口）
+    bool tilesWindowed() const;
+    size_t windowBlocksMaterialized() const;
+    void invalidateFloorWindowForTest();   // 仅测试用（见 FloorWindowCache::invalidateWindowForTest）
+
     struct TilePositionOffset {
         float offsetX = 0.0f;
         float offsetY = 0.0f;
@@ -110,7 +156,15 @@ struct LevelData {
     // tests/level_parse_test.cpp 的自检）必须一起用它。
     bool hasAtStates = false;
 
+    ~LevelData();   // 定义在 LevelData.cpp（unique_ptr<FloorWindowCache> 需要完整类型）
     void releaseMemory();  // free data no longer needed after loading
+    // ③ 切片 4：按块物化缓存（未建/未窗口化时为 null，访问器走密集数组）。
+    // ⚠️ **裸指针**而不是 unique_ptr：libc++ 里 `unique_ptr<不完整类型>` 的宿主只要被本 TU
+    // 构造/析构就会实例化成员的析构（实测 `struct B{unique_ptr<A> p; ~B();}` + `B b;` 直接报
+    // "cannot delete an incomplete type"），而 `LevelData.hpp` 不能包含 `FloorWindow.hpp`
+    // （后者要 LevelData 的嵌套类型）。析构在 `LevelData.cpp`，那里类型完整。
+    FloorWindowCache* m_winCache = nullptr;
+    AngleStore m_angleStore;   // ③ 切片 4：`angleData` 的紧凑存储（releaseAngleData 之后生效）
 
     using ProgressCb = std::function<void(float pct, const char* stage)>;
 

@@ -54,22 +54,25 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 
 1. `git -C ../ADOCAO log -1 --oneline`（工作区必须是干净的）；
 2. 按 [CONTRIBUTING.md](CONTRIBUTING.md) 第 3 节的白名单 `rsync`/`cp`，更新 `SYNCED_AT`；
+   rsync 那几条**必须带 `--exclude='map/'` 与 `--delete`**：前者挡上游的 `core/map/**`
+   （出图，不进库；2026-10 踩过一次），后者处理"上游删了文件"（删过 `assets/shaders/icon.*`、
+   `core/util/ThreadPool.*`）；
 3. **保真对账**：所有镜像文件与上游对应路径**逐字节一致**（脚本在 CONTRIBUTING.md）；
 4. **四格矩阵**（本地最少跑默认 + render=ON）：
    ```bash
-   ctest --test-dir build            # 默认：16/16
-   ctest --test-dir build-on         # render=ON：20/20（含三层几何 + shader 一致性 + 导出）
+   ctest --test-dir build            # 默认：26/26
+   ctest --test-dir build-on         # render=ON：30/30（含三层几何 + shader 一致性 + 导出）
    ```
 5. 绝对路径自检（见上）；
-6. `git push`，然后 `XDG_CACHE_HOME=/tmp/gh-cache gh run watch <id>` —— CI 9 格必须全绿。
+6. `git push`，然后 `XDG_CACHE_HOME=/tmp/gh-cache gh run watch <id>` —— CI **10 格**必须全绿。
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `ad09d05`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `52fc91d`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
-- 测试：render=OFF **16/16**、render=ON **20/20**；CI 9 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
+- 测试：render=OFF **26/26**、render=ON **30/30**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
 - **GPU 逐位那一层在 CI 上跑不了**：Ubuntu/macOS runner 都没有 GL 上下文，`geom_probe` 会
   打印 `SKIP` 退 0。workflow 里有一步专门**报告**它跑没跑 —— 别把"绿"当成"GPU 验过了"。
 - 还没做：**像素门槛**（`capture-gate.sh` 的 50 状态逐字节）没搬 —— 它要跑本体 app 抓帧，

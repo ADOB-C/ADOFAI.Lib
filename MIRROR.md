@@ -11,21 +11,52 @@
 （文档，不在白名单里，所以 `SYNCED_AT` 记的 commit 与"最后跑同步命令的 commit"可能差一笔
 纯文档提交，这是预期行为，不是漏同步）。
 
-## 镜像的文件（P2 现状）
+## 镜像的文件（当前形状）
+
+镜像的是**上游这五个目录的整棵树**（除各目录自己的 `CMakeLists.txt`）：
 
 ```
-src/adofai/core/level/{ByteSource,JsonCleaner,LevelData,LevelPath}.{hpp,cpp}
-src/adofai/core/timeline/*            Timeline / PositionSolver / PlaybackClock / HitsoundTimestampGroup
-src/adofai/core/util/*                AssetPaths / DataFile / Logger / Progress / ThreadPool
-src/adofai/archive/{LevelArchive.{hpp,cpp},Install.hpp}
-src/adofai/audio/{HitsoundManager.{hpp,cpp},AudioEngine.{hpp,cpp},stb_vorbis_impl.cpp}
-tests/level_parse_test.cpp  tests/level_fixtures/**  tests/charts/**
-tests/gen_level_fixtures.py  tests/gen_render_fixtures.py
+src/adofai/core/**      level / timeline / util（含这轮新增的 AngleStore.hpp、FloorWindow.*、
+                        Scheduler.*、Profile.hpp、CountLimits.hpp …）
+src/adofai/archive/**   LevelArchive + `.adocao` v3（Columns/Blocked/Writer/Reader/Checkpoints/
+                        Window/Diagnostics）+ `.ilytx`（Ilybin/Ilytx）+ Install.hpp
+src/adofai/audio/**     HitsoundManager / AudioEngine / stb_vorbis_impl.cpp
+src/adofai/render/**    TileMesh / TileShape / Shaders + 纯头文件 BitSpan.hpp / CullIndex.hpp
+src/adofai/glad/**      gl_core.{hpp,cpp}
+assets/shaders/**       与 render 的内嵌回退 GLSL 必须逐字相同（check_shader_fallback.py 守着）
+tests/*.cpp|*.py|*.mjs  上游的测试源码里"库也想要"的那些（清单在 CONTRIBUTING §3）
+tests/level_fixtures/** tests/charts/**  夹具与验收谱（含这轮新增的 9 个 `.ilytx`）
 ```
 
-排除（按 PLAN.md §3 的白名单）：`core/map/**`（map / 出图留在本体）、`app/**`、
+**排除**（按 PLAN.md §3）：`core/map/**`（map / 出图留在本体）、`app/**`、
 `**/CMakeLists.txt`（库自己的构建文件，连镜像目录里的那几个也是库里写的）、
-`assets/**`、`glad/**`。
+`core/map/**` 之外的 `assets/**`（只镜像 shaders）。
+
+> ⚠️ **`core/map/**` 是两个坑，不是一个**：它既在"排除清单"里，又正好在 `rsync core/` 的
+> 源里面 —— 所以 rsync 必须带 `--exclude='map/'`。2026-10 那次同步真踩了（`LevelMap.cpp` /
+> `PngBand.*` / `PngStream.*` 一次性进了库），现在 CONTRIBUTING、AGENTS、nightly 三处的
+> rsync 都带了这个排除。
+>
+> 同样必须带的是 `--delete`：上游会删文件，而"库里留着上游已经没有的源文件"是最容易静默
+> 烂掉的状态。已经发生过两次 —— 删 `assets/shaders/icon.{frag,vert}`（图标并入 tile.vert 的
+> 几何展开）、删 `core/util/ThreadPool.{hpp,cpp}`（线程池换成 Scheduler）。
+
+### 2026-10 那次大同步（74 个提交）里值得记住的结构变化
+
+* **`.adocao` v2 → v3**：列从"一列到底"改成**分块容器**（每 4096 元素一块、块内自选编码），
+  并新增 `Derived` 段（每 4096 层的续算快照）。版本门禁仍然是唯一闸门（`kVersion`），
+  库侧的 `check_export.py` 现在**从 `AdocaoFormat.hpp` 读 `kVersion` 对账**，不再写死数字
+  （写死会每次升版假红，而从源码读仍然抓得住"写方与读方不是同一个版本"）。
+* **`core/util/ThreadPool.*` 被删，换成 `Scheduler.*` + header-only `Profile.hpp`**：
+  镜像下来的文件换了名字，**库自己的 `core/CMakeLists.txt` 必须同步改**（那是库写的文件，
+  rsync 不会碰）。
+* **`LevelData` 多了 `angleAt()/angleCount()/tileCount()/tilePositionAt()`**，以及
+  `AngleStore`（角度字典 + 位打包）与 `FloorWindowCache`（`tiles` 按块物化）。上游的口径是
+  「**运行期读角度一律走 `angleAt()`**、别再直接碰 `tiles[i]`」。库自有的导出模块因此改成了
+  访问器口径 —— 见上一节与下面那条实测。
+* **新用例的链接差异**：`floor_window_cache` 与 `cull_cost_probe` 会无条件调
+  `archive::install()`，所以 `ARCHIVE=OFF` 时它们必须跟着跳过（与 `level_parse_parity` 同口径），
+  否则配置阶段就会报 "ADOFAI::archive not found"。
 
 **路径与 ADOCAO 逐字一致**（不再有例外）：上游 2026-10 把 archive 挪到仓库根的 `archive/`，
 库这边就是 `src/adofai/archive/`；`core/level/*`、`core/timeline/*`、`core/util/*`、
@@ -106,6 +137,24 @@ rsync 是按 `core archive audio …` 逐目录拷的，本来也不会碰它。
 多出来的项没有读者（只有 actions 的 `strId` 指向池头），是良性的；但它意味着
 "拿 `actionStrTable` 比对来断言 `.adocao` 往返成功"是**错**的判据 —— 我第一版 `modelDigest`
 就是这么写的，被导出模块自己的 `Options::verify` 当场抓出来（那正是它默认开的意义）。
+
+### 第二次对齐（52fc91d）时护栏抓到的两件事
+
+1. **上游把角度改成了可选紧凑存储**（`releaseAngleData()` 会把 `angleData` 直接 `swap` 掉，
+   值只剩 `AngleStore` 里的字典 + 位打包下标）。导出模块原本直读 `level.angleData` ——
+   现在改成 `angleCount()` / `angleAt()`（上游 LevelData.hpp 的口径：「运行期读角度一律走
+   `angleAt()`」）。`export_roundtrip` 为此加了一段：把每个输入尽量 `releaseAngleData()` 成功，
+   再断言「压缩前后指纹相同」「压缩后导出的 `.adofai` 重新解析回来指纹仍相同」。
+   实测 `angles360` 与 `smoke_level` 压缩成功、`diag_glide` 因为字典主导被上游自己拒绝
+   （1024 个取值 → 10 bit/层 + 8 KB 字典 = 9.25 B/层 > 8 B/层）。
+2. **`.adocao` 的 `packLevel` 仍直读密集数组**（上游没走 `angleAt()`）。所以"角度已压缩"
+   的 `LevelData` 打 `.adocao` 会写出一列空角度 —— 导出模块现在**提前明确拒绝**并说明原因，
+   而不是等 `verify` 报一句含糊的"指纹不一致"。
+
+顺带一提：`export_independent` 在这轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
+而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
+它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——
+既不写死（升版不假红），也仍然抓得住"写方与读方不是同一个版本"。
 
 ## P3 收口：现状与残留
 
@@ -194,22 +243,21 @@ rsync 是按 `core archive audio …` 逐目录拷的，本来也不会碰它。
 
 ## CI（`.github/workflows/build.yml`）
 
-三平台：ubuntu（主力矩阵）/ macOS / windows(MSYS2)。Linux 上跑 `ARCHIVE`×`BUNDLE_DEPS`
-的组合 + install/find_package 与 add_subdirectory 两条消费者验收；另两平台只跑默认配置
-（平台性风险在编译/链接，不在选项组合）。三条已验证过的格子：
-`bundled` 4/4、`no-archive` 3/3、`system-deps` 4/4。
-**注意：这份 workflow 还没在任何 CI 上跑过**（本地等价命令都验过，但 GH Actions 环境本身未验）。
+三平台：ubuntu（主力矩阵，8 格）/ macOS（render=ON）/ windows(MSYS2)。
+Linux 的 8 格是 `ARCHIVE` / `EXPORT` / `BUNDLE_DEPS` / `ASSET_ZIP` / `AUDIO` / `AUDIO_DEVICE`
+/ `RENDER` 的组合（`bundled` / `no-archive` / `no-export` / `system-deps` / `no-asset-zip` /
+`no-audio` / `all-modules` / `render-on`），其中 `bundled` 与 `no-export` 两格还做
+install + `find_package` 的消费者验收；`no-export` 那格额外验"模块 OFF 的承诺"（前缀里不许有
+`add_library(ADOFAI::export`、export 的公共头、`libadofai_export.a`）。
+另有一个 nightly job 每天拿**未经确认的上游 HEAD** 跑一遍"镜像 + 构建 + 测试"。
 
-## 待补的镜像内容
+## 不在镜像范围内、且不打算补的
 
-- `tests/{tile_geometry_test.cpp,tile_expansion_test.cpp,geom_probe_test.cpp}`（都要 render，P5）
-  与 `tests/capture_states.txt`（本体像素门槛用，按白名单排除）
-- `render/**` + `glad/**` + `assets/shaders/**`（P5）
-- `tools/tile-geometry-lab/**`（P5，跟着几何走）
-
-## 待补的镜像内容
-
-- `tests/{tile_geometry_test.cpp,tile_expansion_test.cpp,geom_probe_test.cpp}`（都要 render，P5）
-  与 `tests/capture_states.txt`（本体像素门槛用，按白名单排除）
-- `render/**` + `glad/**` + `assets/shaders/**`（P5）
-- `tools/tile-geometry-lab/**`（P5，跟着几何走）
+- **`tests/capture_states.txt` + 像素门槛（`capture-gate.sh` 的 50 状态逐字节）**：它要跑本体
+  app 抓帧，属于本体验收。库里覆盖的是 L0/L1/L2 三层几何 + 内嵌回退 GLSL 的逐字一致。
+- **`app/**`**（ImGui 启动器 / 向导 / 地图导出 / LevelLoader 的窗口化开关都在这里）。
+  `font_cjk_test` 因此也没挂（它链 `adocao_imgui`）。
+- **`core/map/**`**（map / 出图，本体拉流量）。
+- **`tools/tile-geometry-lab/**`**（上游的几何实验台）。
+- `kick_chord`（要 `assets/hitsounds`，不在白名单）、`timeline_ab_dump` / `tl_*_dump`
+  （上游自己也没挂 add_test，是给 app 用的 dump 工具）。

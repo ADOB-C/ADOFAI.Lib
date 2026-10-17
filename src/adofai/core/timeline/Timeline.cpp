@@ -168,15 +168,16 @@ void Timeline::recomputeForTest(std::vector<float>& outStartAngles,
 }
 
 float Timeline::angleDirBefore(int64_t i) const {
-    const auto& ad = m_level->angleData;
+    // ③ 切片 4：走 `angleAt()`（`angleData` 可能已被换成紧凑存储）
     if (i <= 0) return 180.0f;
     const int64_t k = i - 1;
-    const double rawAngleData = (k < (int64_t)ad.size()) ? ad[(size_t)k] : 180.0;
+    const int64_t nAd = m_level->angleCount();
+    const double rawAngleData = (k < nAd) ? m_level->angleAt(k) : 180.0;
     float angleDir;
     if (rawAngleData == 999.0) {
         int minus = 1;
-        while (k - minus >= 0 && ad[(size_t)(k - minus)] == 999.0) minus++;
-        const double realAngle = (k - minus >= 0) ? ad[(size_t)(k - minus)] : 0.0;
+        while (k - minus >= 0 && m_level->angleAt(k - minus) == 999.0) minus++;
+        const double realAngle = (k - minus >= 0) ? m_level->angleAt(k - minus) : 0.0;
         angleDir = (float)std::fmod(realAngle + (minus - 1) * 180.0, 360.0);
     } else {
         angleDir = (float)std::fmod(rawAngleData + 180.0, 360.0);
@@ -190,19 +191,18 @@ float Timeline::extraRotAt(int64_t i) const {
     return (it != m_pauseRot.end() && it->first == i) ? it->second : 0.0f;
 }
 float Timeline::startAngleAt(int64_t i) const {
-    if (m_level->tiles.empty()) return 0.0f;
+    if (m_level->tileCount() == 0) return 0.0f;
     const int64_t n = (int64_t)m_tileBPM.size();
     if (i <= 0) return (m_level->settings.rotation + 180.0f) * 3.14159265f / 180.0f;
     if (i >= n - 1) return startAngleAt(n - 2);
-    return std::fmod(m_level->tiles[(size_t)(i - 1)].direction + 180.0f, 360.0f) * 3.14159265f / 180.0f;
+    return std::fmod(m_level->tileDirectionAt(i - 1) + 180.0f, 360.0f) * 3.14159265f / 180.0f;
 }
 float Timeline::totalAngleAt(int64_t i) const {
-    if (m_level->tiles.empty()) return 0.0f;
+    if (m_level->tileCount() == 0) return 0.0f;
     const int64_t nAll = (int64_t)m_tileBPM.size();
     if (i >= nAll - 1) return m_lastTotalAngle;
-    const auto& ad = m_level->angleData;
     const bool isCW = m_tileIsCW[(size_t)i];
-    const double rawAngleData = (i < (int64_t)ad.size()) ? ad[(size_t)i] : 180.0;
+    const double rawAngleData = (i < m_level->angleCount()) ? m_level->angleAt(i) : 180.0;
     double relAngle;
     if (rawAngleData == 999.0) {
         relAngle = 0.0;
@@ -303,9 +303,10 @@ void Timeline::precalculateTiming() {
 
     // Phase 3: Prefix sum
     double totalTime = 0.0;
+
     for (int i = 0; i < n - 1; i++) {
         m_tileStartTimes[i] = totalTime;
-        totalTime += durationAt(i);
+        totalTime += (double)durationAt(i);   // 时长不存了：后面按块重算用同一个 durationAt() 现算
     }
     if (n > 0) m_tileStartTimes[n - 1] = totalTime;
 
@@ -386,6 +387,58 @@ void Timeline::precalculateTiming() {
         int dc = 0; for (int i = 0; i < n; i++) if (m_tileDisappearTimes[i] < 1e100) dc++;
         LOG_D("TrackVis Phase5: %d/%d tiles have disappearTime, curDA=%s curBB=%.1f curBA=%.1f refBPM=%.1f",
               dc, n, curDA.c_str(), curBB, curBA, flag2 ? num6 : num5);
+        // ③ 切片 2：记下恒定态（无 AnimateTrack 事件时整段不变），供按块重算
+        m_visDA = curDA; m_visAA = curAA; m_visBB = curBB; m_visBA = curBA;
+        m_visNum5 = (n > 0) ? m_tileBPM[0] : 0.0f;
+
+    }
+    m_needsTrackVis = needsTrackVis;
+    // 可重算判据：不需要 TrackVis 时只看时长；需要 TrackVis 时还要求块内没有 AT 事件
+    // （FastAction 只留了 hasTrackAnimation 的 bool，没留 trackAnimation 的值 → 有 AT 就不严格）。
+    if (!needsTrackVis) { m_blocksRecomputable = true; m_blocksWhy = "不需要 TrackVis，只需时长前缀"; }
+    else if (!m_level->hasAtStates) { m_blocksRecomputable = true; m_blocksWhy = "TrackVis 状态恒定（无 AnimateTrack）"; }
+    else { m_blocksRecomputable = false; m_blocksWhy = "有 AnimateTrack：FastAction 没留 trackAnimation 值"; }
+
+    // ③ 切片 1：记录锚点（每 kAnchorStride 层一个）。**只记录，不改消费方** ——
+    // 本切片的验收是"锚点值 == 全量数组在该层逐位相同"（tests/timeline_anchor_test.cpp）。
+    m_anchors.clear();
+    if (n > 0) {
+        const bool hasTV = !m_tileDisappearTimes.empty();
+        for (int64_t i = 0; i < (int64_t)n; i += kAnchorStride) {
+            Anchor a;
+            a.floor = i;
+            a.startTime = m_tileStartTimes[(size_t)i];
+            a.bpm = m_tileBPM[(size_t)i];
+            a.cw = m_tileIsCW[(size_t)i];
+            if (hasTV) {
+                a.hasTrackVis = true;
+                a.disappearTime = m_tileDisappearTimes[(size_t)i];
+                a.appearTime = m_tileAppearTimes[(size_t)i];
+            }
+            m_anchors.push_back(a);
+        }
+        LOG_D("Timeline: %zu 个锚点（每 %lld 层）", m_anchors.size(), (long long)kAnchorStride);
+
+        // ③ 切片 3：粗索引（每锚点一份 TrackVis 时间，26 KB 换掉 103 MB）+ 单调性判据。
+        // **必须在锚点记完之后建**（它在 Phase 5 之后，早建会遍历空数组）。
+        m_coarseDA.clear(); m_coarseAA.clear();
+        m_visCoarseMonotone = false;
+        if (m_needsTrackVis) {
+            m_coarseDA.reserve(m_anchors.size()); m_coarseAA.reserve(m_anchors.size());
+            for (const Anchor& a : m_anchors) {
+                const size_t k = (size_t)a.floor;
+                m_coarseDA.push_back(k < m_tileDisappearTimes.size() ? m_tileDisappearTimes[k] : 0.0);
+                m_coarseAA.push_back(k < m_tileAppearTimes.size() ? m_tileAppearTimes[k] : 0.0);
+            }
+            // 消费方的二分（原实现）就假设单调；只有粗索引也单调才敢窗口化
+            m_visCoarseMonotone = true;
+            for (size_t k = 1; k < m_coarseDA.size(); k++) {
+                if (!(m_coarseDA[k] >= m_coarseDA[k - 1]) || !(m_coarseAA[k] >= m_coarseAA[k - 1])) {
+                    m_visCoarseMonotone = false;
+                    break;
+                }
+            }
+        }
     }
 
     auto [minBPM, maxBPM] = std::minmax_element(m_tileBPM.begin(), m_tileBPM.end());
@@ -393,10 +446,121 @@ void Timeline::precalculateTiming() {
           n - 1, preShiftTotal, *minBPM, *maxBPM);
 }
 
+bool Timeline::recomputeBlock(int64_t i0, int64_t i1, BlockResult& out) const {
+    const int64_t n = tileCount();   // 丢过密集数组也要成立（这正是窗口化的用途）
+    if (i0 < 0 || i1 > n || i0 >= i1) return false;
+    const int64_t stride = kAnchorStride;
+    const int64_t b = i0 / stride;
+    if (b >= (int64_t)m_anchors.size() || m_anchors[(size_t)b].floor != i0) return false;
+    if ((int64_t)m_tileBPM.size() != n) return false;   // 前置：BPM/角度/cw 都在（时长现算）
+    // 起始时间只依赖"时长 + 锚点"，任何谱都可算；TrackVis 两支才需要额外条件（见下）
+
+    // 1) 起始时间：从锚点的**已存值**起步，按层序把时长（转 double）累加 —— 与原前缀同一顺序、
+    //    同一操作，所以逐位相同。为 TrackVis 那一遍多算一层（disappear[i] 要用 start[i+1]）。
+    const int64_t last = std::min(i1 + 1, n);
+    out.startTimes.assign((size_t)(last - i0), 0.0);
+    double t = m_anchors[(size_t)b].startTime;
+    for (int64_t i = i0; i < last; i++) {
+        out.startTimes[(size_t)(i - i0)] = t;
+        if (i < n - 1) t += (double)durationAt(i);   // 现算：与 precalculateTiming 同一函数、同一顺序
+    }
+    // TrackVis 两支：只有"需要 + 可重算"时才给；否则留空（消费方走 trackVisWindowed() 判定）
+    if (!m_needsTrackVis || !m_blocksRecomputable) {
+        out.disappearTimes.clear(); out.appearTimes.clear(); return true;
+    }
+
+    // 2) TrackVis 两支：复刻 Phase 5 的循环（i ∈ [0, n-1) 才写；refBPM 在无 AT 时取 num5）
+    out.disappearTimes.assign((size_t)(i1 - i0), std::numeric_limits<double>::infinity());
+    out.appearTimes.assign((size_t)(i1 - i0), -std::numeric_limits<double>::infinity());
+    const bool writeDA = (m_visDA != "None");
+    const bool writeAA = (m_visAA != "None");
+    const float bpm0 = (n > 0) ? m_tileBPM[0] : 0.0f;
+    for (int64_t i = i0; i < i1 && i < n - 1; i++) {
+        // num5/num6 的推进规则与 Phase 5 逐字相同：i>0 时 num5=num6、num6=bpm[i]；i==0 用初值
+        float num5, num6;
+        if (i == 0) { num5 = m_visNum5; num6 = m_visNum5; }
+        else { num5 = (i - 1 == 0) ? bpm0 : m_tileBPM[(size_t)(i - 1)]; num6 = m_tileBPM[(size_t)i]; }
+        const float refBPM = num5;   // flag2 == false（无 AT）
+        const double st  = out.startTimes[(size_t)(i - i0)];
+        const double st1 = out.startTimes[(size_t)(i - i0 + 1)];
+        if (writeDA) out.disappearTimes[(size_t)(i - i0)] = st1 + (double)(m_visBB * 60.0f / refBPM);
+        if (writeAA) out.appearTimes[(size_t)(i - i0)]    = st  - (double)(m_visBA * 60.0f / refBPM);
+    }
+    return true;
+}
+
+// ③ 切片 3：物化 i 所在的块（单块缓存）。返回该块，出错则 nullptr
+const Timeline::BlockResult* Timeline::windowFor(int64_t i) const {
+    if (i < 0 || i >= tileCount()) return nullptr;
+    const int64_t b = i / kAnchorStride;
+    if (m_winBlock == b && !m_winCache.startTimes.empty()) return &m_winCache;
+    const int64_t i0 = b * kAnchorStride;
+    const int64_t i1 = std::min(i0 + kAnchorStride, tileCount());
+    BlockResult r;
+    if (!recomputeBlock(i0, i1, r)) return nullptr;
+    m_winCache = std::move(r);
+    m_winBlock = b;
+    return &m_winCache;
+}
+
+double Timeline::startTimeAt(int64_t i) const {
+    if (!m_startWindowed) {
+        return (i >= 0 && (size_t)i < m_tileStartTimes.size()) ? m_tileStartTimes[(size_t)i] : 0.0;
+    }
+    const BlockResult* w = windowFor(i);
+    if (!w) return 0.0;
+    const size_t k = (size_t)(i - (i / kAnchorStride) * kAnchorStride);
+    return k < w->startTimes.size() ? w->startTimes[k] : 0.0;
+}
+
+bool Timeline::dropStartTimesArray() {
+    const size_t n = m_tileBPM.size();
+    if (n == 0) return false;
+    if (m_anchors.empty() || m_tileBPM.size() != n) return false;     // 前置：锚点 + BPM 齐备
+    std::vector<double>().swap(m_tileStartTimes);
+    m_startWindowed = true;
+    m_winBlock = -1;         // 缓存里的 startTimes 仍有效，但保持一致语义
+    return true;
+}
+
+double Timeline::disappearTimeAt(int64_t i) const {
+    if (!m_visWindowed) {
+        return (i >= 0 && (size_t)i < m_tileDisappearTimes.size()) ? m_tileDisappearTimes[(size_t)i]
+                                                                   : std::numeric_limits<double>::infinity();
+    }
+    const BlockResult* w = windowFor(i);
+    if (!w) return std::numeric_limits<double>::infinity();
+    const size_t k = (size_t)(i - (i / kAnchorStride) * kAnchorStride);
+    return k < w->disappearTimes.size() ? w->disappearTimes[k] : std::numeric_limits<double>::infinity();
+}
+
+double Timeline::appearTimeAt(int64_t i) const {
+    if (!m_visWindowed) {
+        return (i >= 0 && (size_t)i < m_tileAppearTimes.size()) ? m_tileAppearTimes[(size_t)i]
+                                                                : -std::numeric_limits<double>::infinity();
+    }
+    const BlockResult* w = windowFor(i);
+    if (!w) return -std::numeric_limits<double>::infinity();
+    const size_t k = (size_t)(i - (i / kAnchorStride) * kAnchorStride);
+    return k < w->appearTimes.size() ? w->appearTimes[k] : -std::numeric_limits<double>::infinity();
+}
+
+bool Timeline::dropTrackVisArrays() {
+    if (!m_needsTrackVis) return true;                 // 本来就没有
+    if (!m_blocksRecomputable) return false;           // 有 AT：留着密集数组（行为不变）
+    if (m_coarseDA.empty()) return false;              // 防御：粗索引必须已经建好
+    if (!m_visCoarseMonotone) return false;            // 粗索引不单调 → 二分的等价性没保证
+    std::vector<double>().swap(m_tileDisappearTimes);
+    std::vector<double>().swap(m_tileAppearTimes);
+    m_visWindowed = true;
+    m_winBlock = -1;
+    return true;
+}
+
 double Timeline::totalDuration() const {
-    int n = (int)m_tileStartTimes.size();
+    const int64_t n = tileCount();
     if (n < 2) return 0.0f;
-    return m_tileStartTimes[n - 1] + 10.0;
+    return startTimeAt(n - 1) + 10.0;
 }
 
 bool Timeline::buildRawPcm(std::vector<float>& out, double& sampleRateOut) const {
@@ -436,7 +600,7 @@ bool Timeline::buildRawPcm(std::vector<float>& out, double& sampleRateOut) const
 // 它不是谱面里的砖 —— 打拍音不能给它排一击（曾经末尾会多响一下，Kick 和弦那种
 // "一击不多一击不少"的谱上直接量得出来）。
 int Timeline::realTileCount() const {
-    int n = (int)m_tileStartTimes.size();
+    int n = (int)tileCount();
     if (m_level && !m_level->angleData.empty() && (int)m_level->angleData.size() < n)
         n = (int)m_level->angleData.size();
     return n;
@@ -448,7 +612,7 @@ std::vector<double> Timeline::getHitsoundTimestamps() const {
     if (n < 2) return timestamps;
     float offsetSec = m_level->settings.offset / 1000.0f;
     for (int i = 1; i < n; i++)
-        timestamps.push_back(m_tileStartTimes[i] + offsetSec);
+        timestamps.push_back(startTimeAt(i) + offsetSec);
     return timestamps;
 }
 
@@ -476,24 +640,42 @@ std::vector<HitsoundTimestampGroup> Timeline::getHitsoundTimestampGroups() const
             groupMap[key] = groups.size();
             groups.push_back({type, vol, {}});
         }
-        groups[groupMap[key]].timestamps.push_back(m_tileStartTimes[i] + offsetSec);
+        groups[groupMap[key]].timestamps.push_back(startTimeAt(i) + offsetSec);
     }
     return groups;
 }
 
 int Timeline::findTileIndex(double t) const {
-    int n = (int)m_tileStartTimes.size();
+    const int64_t n = tileCount();
     if (n < 2) return 0;
-    int lo = 0, hi = n - 1;
-    while (lo <= hi) {
-        int mid = (lo + hi) / 2;
-        if (m_tileStartTimes[mid] <= t) lo = mid + 1;
-        else hi = mid - 1;
+    if (!m_startWindowed) {
+        // 未窗口化：保持原实现（逐位同结果）
+        int lo = 0, hi = (int)n - 1;
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2;
+            if (m_tileStartTimes[(size_t)mid] <= t) lo = mid + 1;
+            else hi = mid - 1;
+        }
+        int idx = hi;
+        if (idx < 0) idx = 0;
+        if (idx >= (int)n) idx = (int)n - 1;
+        return idx;
     }
-    int idx = hi;
+    // 窗口化：先在锚点上二分（startTime 单调不减：duration 恒 ≥ 0），再在那一块内取
+    // "最后一个 startTime <= t"的层（与原实现的结果相同；块内扫描对非单调也更稳）。
+    int64_t lo = 0, hi = (int64_t)m_anchors.size() - 1, aEnd = -1;
+    while (lo <= hi) {
+        const int64_t m = (lo + hi) / 2;
+        if (m_anchors[(size_t)m].startTime <= t) { aEnd = m; lo = m + 1; } else hi = m - 1;
+    }
+    if (aEnd < 0) return 0;
+    const int64_t from = aEnd * kAnchorStride;
+    const int64_t to = std::min(from + kAnchorStride, n);
+    int64_t idx = -1;
+    for (int64_t i = from; i < to; ++i)
+        if (startTimeAt(i) <= t) idx = i;
     if (idx < 0) idx = 0;
-    if (idx >= n) idx = n - 1;
-    return idx;
+    return (int)idx;
 }
 
 }  // namespace adofai
