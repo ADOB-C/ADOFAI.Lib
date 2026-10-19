@@ -9,6 +9,7 @@
 #include "archive/AdocaoBlocked.hpp"
 #include "archive/AdocaoColumns.hpp"   // legacy 段的裸列解码（窗口化的退回路径）
 #include "core/util/Logger.hpp"
+#include "core/util/Env.hpp"
 
 namespace adofai {
 namespace adocao {
@@ -91,8 +92,6 @@ bool gatherTyped(const ColumnView& v, uint64_t from, uint64_t to, std::vector<T>
         out.insert(out.end(), blk.begin() + (size_t)lo, blk.begin() + (size_t)hi);
         // 记账：这一块所在帧的存储字节（近似"碰了多少"）
         if (bytesDecoded) {
-            const uint8_t* e = v.frameTable + b / 0 * 0;   // 占位，下面用 locateBlock 拿真实帧
-            (void)e;
             uint64_t frame = 0, inFrame = 0;
             if (v.locateBlock(b, frame, inFrame)) {
                 const uint8_t* fe = v.frameTable + frame * kFrameEntry;
@@ -103,8 +102,6 @@ bool gatherTyped(const ColumnView& v, uint64_t from, uint64_t to, std::vector<T>
     return out.size() == (size_t)(to - from);
 }
 
-bool gatherD(const ColumnView& v, uint64_t from, uint64_t to, std::vector<double>& out,
-             uint64_t* bd) { return gatherTyped<double>(v, from, to, out, bd); }
 bool gatherI(const ColumnView& v, uint64_t from, uint64_t to, std::vector<int64_t>& out,
              uint64_t* bd) { return gatherTyped<int64_t>(v, from, to, out, bd); }
 bool gatherU(const ColumnView& v, uint64_t from, uint64_t to, std::vector<uint32_t>& out,
@@ -113,8 +110,6 @@ bool gatherU(const ColumnView& v, uint64_t from, uint64_t to, std::vector<uint32
 }  // namespace
 
 bool FloorWindowSource::open(const uint8_t* data, size_t length, std::string& err) {
-    m_file = data;
-    m_fileLen = length;
     std::string e;
     if (!getSectionView(data, length, (uint8_t)SectionId::AngleData, m_angleSec, e)) {
         err = "窗口化：取 AngleData 段失败：" + e;
@@ -292,7 +287,7 @@ bool FloorWindowSource::readBlock(uint64_t block, FloorBlock& out, std::string& 
     std::vector<int64_t> floors;
     std::vector<uint32_t> types, flags, strs, v1, v2;
     auto need = [&](int i) -> const ActionColumn& { return m_cols[i]; };
-    const bool dbg = std::getenv("ADOCAO_WINDOW_DBG") != nullptr;
+    const bool dbg = env::flag("ADOCAO_WINDOW_DBG");
     auto diag = [&](int col, uint64_t f, uint64_t t, bool ok) {
         if (!dbg || ok) return;
         const ActionColumn& c = m_cols[col];

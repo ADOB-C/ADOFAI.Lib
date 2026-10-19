@@ -42,6 +42,7 @@ namespace {
 
 int g_fail = 0;
 int g_checked = 0;
+int g_refused = 0;   // 含"没有 JSON 表示"的事件、于是明确拒绝写明文的输入数
 
 void fail(const std::string& what, const std::string& detail)
 {
@@ -134,6 +135,24 @@ int main(int argc, char** argv)
             continue;
         }
         const uint64_t da = exporter::modelDigest(a);
+        // 2026-10-19：上游把相机/砖色/闪屏/轨道动画/重复事件搬进了富结构，它们**没有**
+        // `.adofai` 的 JSON 表示（ScaleRadius 连原始事件都不留）。这类谱必须**明确拒绝**
+        // 写明文 —— 静默丢掉五类事件是比"导不出来"严重得多的失败。下面按两种情况分别断言。
+        std::string unsupported;
+        const bool representable = exporter::canExport(a, &unsupported);
+        if (!representable) g_refused++;
+
+        // `canExport` 的判据是**逐类枚举**的（C++ 没有反射），所以它自己也会漂：上游再加一类
+        // 富事件、或者有人删掉其中一条检查，它就会"说能写"。这条断言把 canExport 与模型现状
+        // 钉在一起 —— 至少已建模的这几类不能漏。
+        const bool hasRich = !a.cameraEvents.empty() || !a.repeatEvents.empty() ||
+                             !a.colorEvents.empty() || !a.flashEvents.empty() ||
+                             !a.moveTrackEvents.empty() || a.hasScaleRadiusEvents();
+        if (hasRich && representable)
+            fail(input, "canExport 说能写明文，但这份谱含富事件（相机/砖色/闪屏/轨道动画/重复/半径）"
+                        " —— 写出来会静默丢事件");
+        if (!hasRich && !representable)
+            fail(input, "canExport 拒绝了，但这份谱没有富事件：" + unsupported);
 
         for (exporter::Format f : formats) {
             const std::string label = input + " -> " + exporter::formatExtension(f);
@@ -151,17 +170,25 @@ int main(int argc, char** argv)
                 continue;
             }
 
+            const std::string path = outDir + "/" + stemOf(input) + exporter::formatExtension(f);
             exporter::Report rep;
-            if (!exporter::exportLevel(a, f, outDir + "/" + stemOf(input)
-                                                 + exporter::formatExtension(f), err,
-                                       exporter::Options(), &rep)) {
+            const bool wrote = exporter::exportLevel(a, f, path, err, exporter::Options(), &rep);
+
+            if (!representable && f != exporter::Format::Adocao) {
+                // 明文三条路：必须失败，而且原因里要指名是哪几类事件。
+                if (wrote) fail(label, "含无 JSON 表示的事件，却**静默写成功了**（数据会丢）");
+                else if (err.empty()) fail(label, "拒绝了却没给原因");
+                else if (err.find("JSON 表示") == std::string::npos)
+                    fail(label, "拒绝原因没解释清楚：" + err);
+                else std::printf("SKIP  %s（%s）\n", label.c_str(), unsupported.c_str());
+                continue;
+            }
+            if (!wrote) {
                 fail(label, "导出失败：" + err);
                 continue;
             }
             if (rep.bytes == 0) fail(label, "Report.bytes 是 0");
             g_checked++;
-
-            const std::string path = outDir + "/" + stemOf(input) + exporter::formatExtension(f);
 
             // ① 导出物自己读得回来，而且建模字段逐位相同
             LevelData b;
@@ -298,7 +325,7 @@ int main(int argc, char** argv)
     // 顺带钉住另一件事：`.adocao` 在上游的 `packLevel` 里仍直读密集数组，所以这种状态下
     // 必须先**明确拒绝**，而不是悄悄写出一列空角度。
     {
-        int compacted = 0, refused = 0;
+        int compacted = 0, refused = 0, refusedThenCompacted = 0;
         for (int ai = 2; ai < argc; ++ai) {
             const std::string input = argv[ai];
             LevelData a;
@@ -312,6 +339,11 @@ int main(int argc, char** argv)
 
             const std::string p = outDir + "/" + stemOf(input) + ".compacted.adofai";
             std::string err;
+            if (!exporter::canExport(a, nullptr)) {
+                // 这段只验"角度压缩之后照样写得出来"，含富事件的谱本来就写不了明文。
+                ++refusedThenCompacted;
+                continue;
+            }
             if (!exporter::exportLevel(a, exporter::Format::Adofai, p, err)) {
                 fail(input + "（角度已压缩）", "导出 .adofai 失败：" + err);
                 continue;
@@ -330,10 +362,11 @@ int main(int argc, char** argv)
             else if (e2.empty())
                 fail(input + "（角度已压缩）", "拒绝 .adocao 却没给原因");
         }
-        std::printf("角度压缩：%d 个输入压缩后验过 .adofai；%d 个不划算被跳过\n", compacted,
-                    refused);
+        std::printf("角度压缩：%d 个输入压缩后验过 .adofai；%d 个不划算被跳过；"
+                    "%d 个因含富事件不适用\n", compacted, refused, refusedThenCompacted);
     }
 
-    std::printf("\n%d 次导出·往返·确定性检查，%d 处失败\n", g_checked, g_fail);
+    std::printf("\n%d 次导出·往返·确定性检查（另有 %d 个输入因含无 JSON 表示的事件被明确拒绝），"
+                "%d 处失败\n", g_checked, g_refused, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

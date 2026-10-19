@@ -53,7 +53,8 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 ## 每次对齐要跑的（每周清单）
 
 1. `git -C ../ADOCAO log -1 --oneline`（工作区必须是干净的）；
-2. 按 [CONTRIBUTING.md](CONTRIBUTING.md) 第 3 节的白名单 `rsync`/`cp`，更新 `SYNCED_AT`；
+2. 按 [CONTRIBUTING.md](CONTRIBUTING.md) 第 3 节的白名单从**上游 HEAD 快照**镜像（`git archive`，
+   **不是**直接 rsync 工作区 —— 上游经常有未提交的改动，直接 rsync 会把它们拽进库里），更新 `SYNCED_AT`；
    rsync 那几条**必须带 `--exclude='map/'` 与 `--delete`**：前者挡上游的 `core/map/**`
    （出图，不进库；2026-10 踩过一次），后者处理"上游删了文件"（删过 `assets/shaders/icon.*`、
    `core/util/ThreadPool.*`）；
@@ -61,8 +62,8 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 4. **本地只跑两格**（默认 + render=ON）。其余 6 格**交给 CI** —— CI 那 10 格把它们全覆盖了，
    本地再跑一遍是重复劳动（8 格全量约 5–6 分钟，两格约 1.5 分钟）：
    ```bash
-   ctest --test-dir build            # 默认：28/28
-   ctest --test-dir build-render     # render=ON：32/32（含三层几何 + shader 一致性 + 导出）
+   ctest --test-dir build            # 默认：32/32
+   ctest --test-dir build-render     # render=ON：37/37（含三层几何 + shader 一致性 + 导出）
    ```
    `build-render` 由 `bash build/matrix.sh render` 建（也接受多个配置名，产物在 `build-*/`，
    已 gitignore）。**只有改了 install/export/选项矩阵/CI 本身时**才值得本地多跑几格 ——
@@ -80,11 +81,11 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `3f73ca2`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `9ac56ec`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
-- 测试：render=OFF **28/28**、render=ON **32/32**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
+- 测试：render=OFF **32/32**、render=ON **37/37**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
 - **GPU 逐位那一层在 CI 上跑不了**：Ubuntu/macOS runner 都没有 GL 上下文，`geom_probe` 会
   打印 `SKIP` 退 0。workflow 里有一步专门**报告**它跑没跑 —— 别把"绿"当成"GPU 验过了"。
 - 还没做：**像素门槛**（`capture-gate.sh` 的 50 状态逐字节）没搬 —— 它要跑本体 app 抓帧，

@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -82,7 +83,6 @@ int main(int argc, char** argv) {
     }
     Timeline tl;
     tl.build(lv, false);
-    const std::vector<double>& st = tl.tileStartTimes();
 
     // ---- ① 击打时刻 = 三个频率网格的并集（公共周期内 12 段，逐周期重复）----
     std::vector<double> gaps;
@@ -106,7 +106,6 @@ int main(int argc, char** argv) {
         keep.push_back(acc);
         acc += gaps[k % per];
     }
-    const double t0 = keep.empty() ? 0.0 : keep[0];
 
     // "真正会响的那些时刻" = 非 None 分组的时刻（细分相位的静音砖不进这组）
     std::vector<double> audible;
@@ -214,6 +213,9 @@ int main(int argc, char** argv) {
     check(hi / lo < 20.0, "三个音都在同一量级（同时响 → 和弦，不是琶音）");
 
     if (!wavPath.empty()) {
+        // 别假设 build/diag/ 存在：CI 是全新目录（2026-10-17 Linux 红过）。
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(wavPath).parent_path(), ec);
         const bool w = hm.writeWav(wavPath);
         std::printf("     %s %s\n", w ? "已写出" : "写不出", wavPath.c_str());
         check(w, "能导出 WAV（给耳朵复核用）");

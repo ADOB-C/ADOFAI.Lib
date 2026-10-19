@@ -4,6 +4,7 @@
 #include <cstdlib>
 
 #include "core/util/Logger.hpp"
+#include "core/util/Env.hpp"
 
 namespace adofai {
 
@@ -18,8 +19,7 @@ Scheduler::InParallelGuard::~InParallelGuard() { --t_inParallel; }
 
 bool Scheduler::serialForced() {
     static const bool forced = [] {
-        const char* e = std::getenv("ADOCAO_JOBS");
-        const bool f = e && std::atoi(e) == 1;
+        const bool f = env::flag("ADOCAO_JOBS");
         if (f) LOG_I("scheduler: ADOCAO_JOBS=1 → 全部并行就地串行（A/B 对照用）");
         return f;
     }();
@@ -59,28 +59,8 @@ Scheduler::~Scheduler() {
         if (t.joinable()) t.join();
 }
 
-void Scheduler::configure(const Config& c) {
-    // 只允许在**没有 worker 被唤醒过**之前改（典型用法：main() 顶部）。
-    // 真要运行期改 worker 数，属于预留的缝（文档 §3.4）——那时再加"扩缩容"路径。
-    if (!m_workers.empty()) {
-        LOG_W("scheduler: configure 在任何任务之前才生效（当前 %zu 个 worker）", m_workers.size());
-        return;
-    }
-    unsigned n = c.workers;
-    if (n == 0) {
-        n = std::thread::hardware_concurrency();
-        if (n == 0) n = 2;
-        n = n > 1 ? n - 1 : 1;
-        if (n > 8) n = 8;
-    }
-    m_mainParticipates = c.mainParticipates;
-    m_workers.reserve(n);
-    for (unsigned i = 0; i < n; ++i) m_workers.emplace_back(&Scheduler::workerLoop, this);
-    LOG_I("scheduler: 配置为 %u 个 worker（+调用线程）", n);
-}
-
 size_t Scheduler::targetChunks() const {
-    const size_t w = m_workers.empty() ? 1 : m_workers.size();
+    const size_t w = m_workers.size();
     return w * 4;   // 每 worker 4 块：负载均衡 vs 分块成本
 }
 
@@ -113,13 +93,12 @@ void Scheduler::workerLoop() {
 Scheduler::Handle Scheduler::submit(Lane lane, std::function<void(CancelToken)> fn) {
     auto done = std::make_shared<std::atomic<bool>>(false);
     CancelToken tok;
-    const CancelToken tokCopy = tok;
-    auto wrapped = [fn = std::move(fn), done, tokCopy]() {
-        if (tokCopy.cancelled()) { done->store(true, std::memory_order_release); return; }
-        fn(tokCopy);
+    auto wrapped = [fn = std::move(fn), done, tok = std::move(tok)]() {
+        if (tok.cancelled()) { done->store(true, std::memory_order_release); return; }
+        fn(tok);
         done->store(true, std::memory_order_release);
     };
-    if (serialForced() || inParallel() || m_workers.empty()) {
+    if (serialForced() || inParallel()) {
         InParallelGuard g;
         wrapped();
         return Handle(done, tok);

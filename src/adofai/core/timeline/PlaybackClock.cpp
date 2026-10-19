@@ -89,6 +89,26 @@ void PlaybackClock::updateFrame() {
         return;
     }
     const int n = (int)nFull;
+    // 结尾定格：到"末尾合成砖"的起点（=最后一格走完）就停住，行星停在最后一格，
+    // 不再沿合成砖继续前进（旧行为会让球跑到轨道外面，看起来"最后一格没画出来"）。
+    double endTime = 0.0;
+    if (n >= 2) {
+        endTime = m_timeline->startTimeAt(n - 1);
+        if (t >= endTime) {
+            // 结尾 = 官方的 **Infinite Rotation**（Re_ADOJAS `Player.ts` 的
+            // "past the last tile" 分支）：枢轴星停在最后一格**中心**，移动星继续
+            // 以半径 1 绕它转，角速度 = 该格的 bpm。别再手写"两颗球都放到格心"——
+            // 那会让红蓝完全重合（2026-10-18 用户问的"为什么重叠"就是它）。
+            // 时间继续走：结尾的 Flash（2025 是 768 拍白色淡出）和 512 拍 MoveCamera
+            // 都排在最后一层，时间不走就永远不播。
+            m_frame.timeInLevel = t;
+            m_frame.elapsedMs = m_elapsedTime;
+            m_currentTileIndex = n - 2;
+            m_frame.tileIndex = m_currentTileIndex;
+            PositionSolver::positionAt(*m_timeline, t, m_frame.redPosition, m_frame.bluePosition);
+            return;
+        }
+    }
     m_currentTileIndex = m_timeline->findTileIndex(t);
     m_frame.timeInLevel = t;
     m_frame.elapsedMs = m_elapsedTime;
@@ -96,7 +116,7 @@ void PlaybackClock::updateFrame() {
 
     PositionSolver::positionAt(*m_timeline, t, m_frame.redPosition, m_frame.bluePosition);
 
-    if (!m_reportedEnd && n >= 2 && m_currentTileIndex >= n - 1) {
+    if (!m_reportedEnd && n >= 2 && m_currentTileIndex >= n - 2) {
         m_reportedEnd = true;
         LOG_D("Planet reached end: tileTime=%.3fs", t);
     }

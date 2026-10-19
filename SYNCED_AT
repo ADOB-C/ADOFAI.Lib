@@ -5,9 +5,45 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=3f73ca2
-ADOCAO_COMMIT_FULL=3f73ca2f6befb338a24d5e7fdf1229d675183eda
-ADOCAO_COMMIT_DATE=2026-10-17
+ADOCAO_COMMIT=9ac56ec
+ADOCAO_COMMIT_FULL=9ac56ec4a8fc8ed1d212b226c2dab54c7712fc32
+ADOCAO_COMMIT_DATE=2026-10-18
+# 本次同步要点（**110 个提交**，镜像区 71 个文件、+3979/−988；201 个镜像文件逐字节一致）：
+#
+#  0. **镜像源改成 HEAD 快照**：上游工作区当时是脏的（4 个镜像文件有未提交改动），而 rsync
+#     拷的是工作区 —— 直接拷会把半成品拽进库里。现在先用 `git archive HEAD` 打快照再从快照
+#     rsync（CONTRIBUTING §3 已改）。这样"对齐点"与"镜像内容"永远是同一个 commit。
+#
+#  1. **相机系统进了 core**：新增 core/camera/{CameraTimeline,CameraDirector}.{hpp,cpp} ——
+#     它们只要 LevelData/Timeline、不碰 GL，所以放 core 而不是 render。配套新用例
+#     camera / camera_timeline / camera_zoom（最后一条要 render）。
+#  2. **Easing 从 render/ 挪到 core/util/**（纯数学，相机与砖色都要用，而 core 不能依赖
+#     render）。render/Easing.hpp 已删。
+#  3. **砖色模型**：core/level/TileColor.{hpp,cpp}（trackStyle 的 fill/stroke 派生、颜色类型、
+#     pulse）+ Flash 全屏闪屏。新 shader assets/shaders/flash.{frag,vert}，内嵌串 kFlash*。
+#     顺带：上一轮记的那个**遗留文件 assets/shaders/highlight.vert 被上游删掉了**，
+#     现在 assets/shaders 与内嵌串一一对应（shader 护栏 8 → 10 对）。
+#  4. **Settings 多了 8 个字段**：trackColorType / trackColorPulse / trackColorAnimDuration /
+#     trackPulseLength / trackStyle / trackGlowIntensity / pitch / legacyCamRelativeTo。
+#     导出的写方与 modelDigest 都补上了（`songFilename` 那次的教训）。
+#  5. **五类事件搬进富结构**：cameraEvents(MoveCamera) / repeatEvents / colorEvents
+#     (ColorTrack+RecolorTrack) / flashEvents / moveTrackEvents，外加 ScaleRadius（只烘进砖位、
+#     原始事件不留）。`.adocao` 有第 9~13 段存前五类；但 **`.adofai` 的 JSON 没有它们的表示**。
+#     → 导出模块新增 canExport()：这种谱**明确拒绝**写明文（静默丢掉全部相机/砖色/闪屏事件
+#     是比"导不出来"严重得多的失败）。`.adocao` 的自检也改成"重打包字节相同"（字段无关）。
+#  6. **公共头依赖变了**：HitsoundManager.hpp 现在 include audio/AudioEngine.hpp（取
+#     AUDIO_SAMPLE_RATE）→ 装出去的 audio 头必须**两个都装**，否则 AUDIO=ON/DEVICE=OFF 的
+#     消费者编不过（库自己的 CMakeLists 已改）。另：setVolume/setHitsoundType/reset 被上游删除，
+#     examples/headless 跟着改。
+#
+# 新用例（全部挂上，共 +5）：camera / camera_timeline / camera_zoom（render）/ easing / tile_color。
+# 没挂的仍只有 font_cjk（要 ImGui）。
+#
+# 上游仍有的问题（不是库改出来的）：AdocaoWindow.cpp:94 的 `b / 0`（UB）仍在；
+# LevelArchive.cpp / AdocaoColumns.cpp 的 -Wswitch 仍在。
+#
+# 上一次同步：3f73ca2（纯 app/ 的一笔 + 补 releaseMemory 存活契约测试）。
+
 # 本次同步要点（1 个提交，**镜像区一个文件都没动** —— 只改了 app/）：
 #
 #   `3f73ca2 fix(app): 事件图标在实机里全部消失 —— 网格建完就把图标位图清了（+ 修我自己引入的

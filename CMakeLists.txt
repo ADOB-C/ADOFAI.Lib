@@ -278,15 +278,15 @@ if(ADOFAI_LIB_INSTALL)
             FILES_MATCHING PATTERN "*.hpp")
     endif()
     if(ADOFAI_LIB_ENABLE_AUDIO)
-        # 逐个装而不是 install(DIRECTORY)：AudioEngine.hpp 只对链了 audio_device 的人有意义
-        # （它虽然不 include miniaudio —— 只前置声明 ma_device / ma_decoder —— 但那个类是设备
-        # 模块的内容）。HitsoundManager.hpp 才是纯合成/导出的公共头。
-        install(FILES "${ADOFAI_LIB_SRC_ROOT}/audio/HitsoundManager.hpp"
+        # 两个头都要装（2026-10-19 更正）：上游把 `AUDIO_SAMPLE_RATE` 放在 AudioEngine.hpp，
+        # 而 **HitsoundManager.hpp 现在无条件 include 它** —— 所以只装 HitsoundManager.hpp
+        # 会让 AUDIO=ON / AUDIO_DEVICE=OFF 的消费者拿不到那个头（自己这边编得过、装出去就坏）。
+        # 代价可接受：AudioEngine.hpp 里**没有** miniaudio 类型（只前置声明 ma_device /
+        # ma_decoder），装它不会把设备依赖带给消费者；真去链 AudioEngine 的符号才会缺。
+        install(FILES
+            "${ADOFAI_LIB_SRC_ROOT}/audio/HitsoundManager.hpp"
+            "${ADOFAI_LIB_SRC_ROOT}/audio/AudioEngine.hpp"
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/audio)
-        if(ADOFAI_LIB_AUDIO_DEVICE)
-            install(FILES "${ADOFAI_LIB_SRC_ROOT}/audio/AudioEngine.hpp"
-                DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/audio)
-        endif()
     endif()
     if(ADOFAI_LIB_ENABLE_RENDER)
         # render 的公共头 + GL 加载器头（render 的公共头 include <glad/gl_core.hpp>）

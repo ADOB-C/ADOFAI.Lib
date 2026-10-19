@@ -35,6 +35,15 @@ namespace exporter {
 // angleData（体积换保真：重新解析后两个字段都逐位还原）。要体积就用 `.adocao`。
 bool writeJson(const LevelData& level, std::string& out, std::string& err);
 
+// 这份 `LevelData` 能不能写成**明文 JSON**？
+//
+// 2026-10-18 起不能保证：上游把 MoveCamera / RepeatEvents / ColorTrack+RecolorTrack /
+// Flash / MoveTrack 五类事件搬进了**富结构**（`cameraEvents` 等），ScaleRadius 更是只把结果
+// 烘进 tile 位置、原始事件都不留 —— 这些**都没有 `.adofai` 的 JSON 表示**。
+// 写明文就会静默丢掉它们（而 `.adocao` 有第 9~13 段专门存前五类）。
+// 所以：不能写就**明确拒绝**（`why` 里列出是哪几类、各多少条），绝不静默给半截文件。
+bool canExport(const LevelData& level, std::string* why = nullptr);
+
 // "库建模字段"的指纹（FNV-1a-64，逐字段按位喂字节）：
 // settings 全体 + angleData + pathData + 每个 action 的 6 列（字符串按**解出来的内容**算，
 // 不按池下标 —— 池的形状不是建模内容，理由写在 LevelJsonWriter.cpp 的 modelDigest 里）。

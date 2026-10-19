@@ -27,12 +27,16 @@ CHECKS = [
     ("kPlanetFragSrc", "planet.frag"),
     ("kTrailVertSrc", "trail.vert"),
     ("kTrailFragSrc", "trail.frag"),
+    # 闪光（2026-10-18 新增，`Flash` 事件）。
+    ("kFlashVertSrc", "flash.vert"),
+    ("kFlashFragSrc", "flash.frag"),
     # 注：icon.vert / icon.frag 已被上游删除（图标并入 tile.vert 的几何展开），
     # 所以这里也不再校验它们。
     #
     # 注：`kHighlightVertSrc` **不是**一个独立的内嵌串，而是 `= kTileVertSrc` 这个别名
-    # （高亮与砖块共用同一条顶点路）。所以这里没有 highlight.vert 这一对 —— 盘上的
-    # assets/shaders/highlight.vert 是合并前的遗留文件（13 行的旧着色器），已经不参与渲染。
+    # （高亮与砖块共用同一条顶点路）。上游 2026-10-18 终于把盘上那份遗留的
+    # assets/shaders/highlight.vert 删掉了（正是这条注释上一轮指出的那个遗留文件），
+    # 所以现在 assets/shaders 与内嵌串是**一一对应**的，不再有"有文件没串"的项。
 ]
 
 

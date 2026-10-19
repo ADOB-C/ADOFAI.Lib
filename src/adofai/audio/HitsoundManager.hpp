@@ -5,6 +5,7 @@
 #include <functional>
 
 #include "core/timeline/HitsoundTimestampGroup.hpp"
+#include "audio/AudioEngine.hpp"   // AUDIO_SAMPLE_RATE（默认输出率）
 
 
 namespace adofai {
@@ -23,17 +24,19 @@ public:
 
     // hitsounds 的相对目录（产品设一次，例如 "assets/hitsounds"）。不设 = 相对当前目录。
     static void setDefaultHitsoundSubdir(const std::string& subdir);
-
-    void setHitsoundType(const std::string& type);
-    void setVolume(float vol);  // 0-100
     void setEnabled(bool enabled);
-    bool isEnabled() const { return m_enabled; }
+
 
 
 
 
     // Hits actually mixed by the last preSynthesize() call.
     int lastMixedHits() const { return m_lastMixedHits; }
+
+    // 输出采样率 = **音频设备的实际采样率**（`ma_device::playback.internalSampleRate`）。
+    // 回调是 1:1 拷贝、不做重采样，所以缓冲必须按设备率合成；默认 48000。
+    // 必须在 preSynthesize()/preSynthesizeRawPcm() **之前**调用。
+    void setOutputSampleRate(int hz);
 
     bool preSynthesize(const std::vector<HitsoundTimestampGroup>& groups, float totalDuration,
                        HitsoundProgressCb onProgress = nullptr);
@@ -51,7 +54,6 @@ public:
     size_t* cursor() { return &m_readCursor; }
     bool* playing() { return &m_playing; }
 
-    void reset();
     void resetAt(float audioPosSec);  // seek cursor to position
     void stop();
     bool isSynthesized() const { return m_synthesized; }
@@ -61,11 +63,11 @@ private:
     std::string m_assetsDir;
 
     std::vector<float> m_buffer;
-    int m_sampleRate = 44100;
+    int m_sampleRate = 44100;      // 当前缓冲的实际采样率（合成后 = m_outputRate）
+    int m_outputRate = AUDIO_SAMPLE_RATE;   // 目标输出率（设备率）
     size_t m_readCursor = 0;
 
     std::string m_hitsoundType = "Kick";
-    float m_volume = 1.0f;
     bool m_enabled = true;
     bool m_synthesized = false;
     bool m_playing = false;

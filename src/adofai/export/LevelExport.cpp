@@ -105,13 +105,24 @@ bool verifyAdocao(const std::vector<uint8_t>& bytes, const LevelData& level, std
         err = "自检失败：写出的 `.adocao` 自己解不开（" + reason + "）";
         return false;
     }
-    const uint64_t a = modelDigest(level);
-    const uint64_t b = modelDigest(back);
-    if (a != b) {
-        char buf[160];
+    // 判据用**"再打一次包，字节必须完全相同"**，而不是比 modelDigest。
+    // 理由（2026-10-19）：`.adocao` 现在有 13 个段（含 Camera/Repeat/Colour/Flash/MoveTrack），
+    // 而 modelDigest 是**逐字段枚举**的 —— 上游每加一类事件，那份枚举就得跟一次，漏了就是
+    // "自检绿灯但数据已经丢了"。pack 的产物只由建模字段决定，所以"重打包字节相同"是
+    // **字段无关**的等价判据：unpack 丢了任何一项，第二次 pack 就一定不同。
+    // （代价：多打一次包。`Options::verify=false` 可以关掉这一整层。）
+    std::vector<uint8_t> again;
+    std::string e2;
+    if (!adocao::packLevel(back, again, e2)) {
+        err = "自检失败：把解出来的 `.adocao` 再打一次包时失败（" + e2 + "）";
+        return false;
+    }
+    if (again != bytes) {
+        char buf[200];
         std::snprintf(buf, sizeof(buf),
-                      "自检失败：`.adocao` 往返后建模字段不一致（指纹 %016llx vs %016llx）",
-                      (unsigned long long)a, (unsigned long long)b);
+                      "自检失败：`.adocao` 往返后重打包不是逐字节相同（%zu vs %zu 字节）"
+                      " —— 说明有一项建模字段在 pack/unpack 之间丢了",
+                      bytes.size(), again.size());
         err = buf;
         return false;
     }
@@ -205,6 +216,15 @@ bool writeTo(Format f, const LevelData& level, std::vector<uint8_t>& out, std::s
     }
 
     // 明文 JSON 是所有路线的中间产物（`.adocao` 除外 —— 它是列式表示，不是"压过的 JSON"）。
+    // 先问一句"这份谱能不能用 JSON 表示"：五类富事件 / ScaleRadius 没有 JSON 形式，
+    // 硬写就是静默丢事件（见 LevelJsonWriter.hpp 的 canExport 说明）。
+    {
+        std::string why;
+        if (!canExport(level, &why)) {
+            err = why;
+            return false;
+        }
+    }
     std::string json;
     if (!writeJson(level, json, err)) return false;
     rep.jsonBytes = json.size();

@@ -61,8 +61,15 @@ ADOCAO 本体刻意不做导出（它的 `--export` 是打拍音 WAV），所以
 ## 3. 对齐流程
 
 ```bash
-# 0) 上游必须是干净的：git -C ../ADOCAO status --short  应输出为空
-cd ../ADOCAO && git log -1 --oneline      # 记住要对齐到的 commit
+# 0) 记下要对齐到的 commit
+cd ../ADOCAO && git log -1 --oneline
+# ⚠️ 上游**经常有未提交的改动**（2026-10-19 就是：4 个镜像文件脏着）。
+# 直接 rsync 工作区会把这些半成品拽进库里，然后对账时一片 DIFF。
+# 所以下面先用 `git archive` 打一份 **HEAD 快照**，再从快照 rsync —— 与工作区干净无关。
+cd ../ADOFAI.Lib
+rm -rf build/_upstream_head && mkdir -p build/_upstream_head
+git -C ../ADOCAO archive HEAD core archive audio render glad assets/shaders tests \
+  | tar -x -C build/_upstream_head
 
 # 1) 按白名单拷（排除 core/map、app、各目录的 CMakeLists）
 cd ../ADOFAI.Lib
@@ -72,11 +79,11 @@ cd ../ADOFAI.Lib
 # 不带它就会在库里留一堆"上游已经没有"的孤儿源文件。
 for d in core archive audio render glad; do
   rsync -a --delete --exclude='.DS_Store' --exclude='CMakeLists.txt' --exclude='map/' \
-    ../ADOCAO/$d/ src/adofai/$d/
+    build/_upstream_head/$d/ src/adofai/$d/
 done
-rsync -a --delete --exclude='.DS_Store' ../ADOCAO/assets/shaders/ assets/shaders/
-rsync -a --delete --exclude='.DS_Store' ../ADOCAO/tests/level_fixtures/ tests/level_fixtures/
-rsync -a --delete --exclude='.DS_Store' ../ADOCAO/tests/charts/ tests/charts/
+rsync -a --delete --exclude='.DS_Store' build/_upstream_head/assets/shaders/ assets/shaders/
+rsync -a --delete --exclude='.DS_Store' build/_upstream_head/tests/level_fixtures/ tests/level_fixtures/
+rsync -a --delete --exclude='.DS_Store' build/_upstream_head/tests/charts/ tests/charts/
 # 镜像来的测试源码与夹具生成脚本（逐字节副本）。
 # 这份清单要跟着上游 tests/ 里"库也想要的那些"走：新增的 .cpp 记得加进来，否则它们会
 # 在库里编译不到、也就不会被挂成用例（`ilytx` / `adocao_window` 这类就是这样来的）。
@@ -89,7 +96,7 @@ for f in level_parse_test.cpp lzma_mt_compat_test.cpp \
          limits_test.cpp position_offset_test.cpp raw_pcm_test.cpp hz_grid_test.cpp \
          kick_chord_test.cpp timeline_ab_dump.cpp tl_dump.cpp tl_full_dump.cpp tl_trail_dump.cpp \
          gen_level_fixtures.py gen_render_fixtures.py gen_adocao_charts.py gen_ilytx_fixtures.mjs; do
-  cp ../ADOCAO/tests/$f tests/
+  cp "build/_upstream_head/tests/$f" tests/
 done
 
 # 2) 把新 commit 写进 SYNCED_AT（ADOCAO_COMMIT / _FULL / _DATE）
@@ -149,14 +156,14 @@ ctest --test-dir build
 
 | 配置 | 关键参数 | 期望 |
 |---|---|---|
-| 默认 | — | ctest **28/28** |
-| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **14/14**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
-| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | **28/28**（走 `find_package(LibLZMA/zstd)`）|
-| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | **28/28**，core 里零 `mz_` 符号 |
-| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | **24/24** |
-| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | **28/28**（会引入 miniaudio + stb）|
-| render=ON | `-DADOFAI_LIB_RENDER=ON` | **32/32**（引入 glad + GLFW + 平台 GL；三层几何）|
-| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | **26/26**（`ADOFAI::export` 不存在，link 它是编译期报错）|
+| 默认 | — | ctest **32/32** |
+| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **15/15**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
+| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | **32/32**（走 `find_package(LibLZMA/zstd)`）|
+| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | **32/32**，core 里零 `mz_` 符号 |
+| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | **28/28** |
+| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | **32/32**（会引入 miniaudio + stb）|
+| render=ON | `-DADOFAI_LIB_RENDER=ON` | **37/37**（引入 glad + GLFW + 平台 GL；三层几何）|
+| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | **30/30**（`ADOFAI::export` 不存在，link 它是编译期报错）|
 
 > 计数会随用例增减变，**它只是"这一刻该看到多少条"的对照表**，不是判据；判据永远是
 > "`ctest` 全绿 + 该跳过的都打印了跳过原因"。

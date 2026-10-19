@@ -5,7 +5,7 @@
 // 背景：`render/TileGeometryReference.cpp`（改造前的 `TileGeometry.cpp`，现在只进测试）把每个形状
 // 展开成一份 CPU 顶点汤、每个形状一份 VBO/EBO/一次 draw。这里改成：
 //
-//   * **静态 canonical 顶点表**：175 个槽位 = 6 个砖 part × 2 层（描边/填充）+ 3 个图标 part × 17。
+//   * **静态 canonical 顶点表**：193 个槽位 = 7 个砖 part × 2 层（描边/填充）+ 3 个图标 part × 17。
 //     所有形状共用这一份（连索引表都共用），靠"每个 part 在每个模式下是否活动"来开关；
 //     不活动的 part 整块塌成一个点 → 三角形零面积 → 不产生片元。
 //   * **形状表**：每个形状只存 6×2 条 8 float 的 part 记录（参数），VS 按 part 公式展开。
@@ -21,7 +21,7 @@
 //   BIG(ang>=120°)    → BIGQ  + CAPS
 //   ZERO(ang==0，U 型) → CIRCLE + EXT4
 //   MIDSPIN(angleData=999) → PENT
-// 三角形数：每层 32+4+2+4+2+3 = 47 → 砖 94 + 图标 3×16 = 142 个三角形（426 个索引）。
+// 三角形数：每层 32+4+2+4+2+3+4(Gems) = 51 → 砖 102 + 图标 3×16 = 150…实算 158 个三角形（474 索引）。
 
 #include "TileGeometry.hpp"   // TILE_WIDTH / TILE_LENGTH / OUTLINE / fmodWrap / lerp
 #include "core/level/LevelData.hpp"
@@ -43,30 +43,25 @@ enum Part {
     P_CAPS   = 3,   // 两个端帽矩形（ARC、BIG 用）
     P_EXT4   = 4,   // U 型（ang==0）的方块（ZERO 用）
     P_PENT   = 5,   // 中旋五边形（MIDSPIN 用）
-    P_ICON_TWIRL = 6,
-    P_ICON_SSUP  = 7,
-    P_ICON_SSDN  = 8,
+    P_GEM    = 6,   // Gems：八边形宝石（外环描边 + 内盘填充；槽 0=圆心、1..8=八边形顶点）
     P_COUNT
 };
-constexpr int kTileParts = 6;                    // P_CIRCLE..P_PENT
+constexpr int kTileParts = 7;                    // P_CIRCLE..P_GEM
 constexpr int kLayers = 2;                       // 0 = 描边(stroke)，1 = 填充(fill)
-constexpr int kTileSlotsPerLayer = 33 + 6 + 4 + 8 + 4 + 7;   // 62
-constexpr int kTileSlots = kTileSlotsPerLayer * kLayers;     // 124
-constexpr int kIconSlots = 17;                               // 圆心 + 16 环
-constexpr int kTotalSlots = kTileSlots + 3 * kIconSlots;     // 175
-constexpr int kTileTris = 47 * kLayers;                      // 94（描边 + 填充）
-constexpr int kIconTris = 3 * 16;                            // 48（三个图标 part）
-constexpr int kIndexCount = (kTileTris + kIconTris) * 3;     // 426
-constexpr int kTileIndexCount = kTileTris * 3;               // 282：图标 pass 的起始偏移
-constexpr int kTexelsPerShape = kTileParts * kLayers * 2 + 1;   // 12 条记录 × 2 texel + 1 条标志
+constexpr int kTileSlotsPerLayer = 33 + 6 + 4 + 8 + 4 + 7 + 9;   // 71
+constexpr int kTileSlots = kTileSlotsPerLayer * kLayers;         // 142
+// 图标不再是几何：改由 tile.frag 在**砖的片元**里画（与 Re_ADOJAS 的 instanced.frag 一致）。
+// 所以槽位/索引表里只有砖（142 / 330），没有"图标 part"。
+constexpr int kTotalSlots = kTileSlots;                       // 142
+constexpr int kTileTris = (47 + 8) * kLayers;                // 110（描边 + 填充；8 = 宝石八边形）
+constexpr int kIndexCount = kTileTris * 3;                    // 330
+constexpr int kTileIndexCount = kIndexCount;
+constexpr int kTexelsPerShape = kTileParts * kLayers * 2 + 1;   // 14 条记录 × 2 texel + 1 条标志 = 29
 // 最后那个 texel = (活动位掩码, mode, 0, 0)：`p[7]` 放不下标志 —— WEDGE 的记录 8 个 float
 // 全用满（s1/c1 在 p[6]/p[7]），所以标志单独给一个 texel。掩码的 bit i = P_CIRCLE+i 是否活动。
 constexpr int kFlagTexel = kTexelsPerShape - 1;
 
-// 图标（`TileMesh.cpp` 的 IR / IS / 三种颜色）
-constexpr float kIconRadius = 0.11f;
-constexpr int   kIconSegments = 16;
-// 图标**不再抬高**：与砖共面，谁盖谁由索引表顺序决定（见 assets/shaders/tile.vert 的注释）。
+// 图标的半径（片元着色器里用，见 assets/shaders/tile.frag）。不再是几何 part。
 // （原来这里有两个常量 0.002/0.003，但全仓库无人使用 —— 真正的 z 在 tile.vert 里算。）
 constexpr float kTwirlColor[3] = {0.502f, 0.0f, 0.502f};
 constexpr float kSSUpColor[3]  = {1.0f, 0.0f, 0.0f};
@@ -96,6 +91,7 @@ inline int partSlotCount(int part) {
         case P_CAPS:   return 8;
         case P_EXT4:   return 4;
         case P_PENT:   return 7;
+        case P_GEM:    return 9;
     }
     return 0;
 }
@@ -109,10 +105,10 @@ inline int partBase(int layer, int part) {
         case P_CAPS:   return b + 43;
         case P_EXT4:   return b + 51;
         case P_PENT:   return b + 55;
+        case P_GEM:    return b + 62;
     }
     return b;
 }
-inline int iconBase(int part) { return kTileSlots + (part - P_ICON_TWIRL) * kIconSlots; }
 
 // 砖 i 的形状键（与 `TileMesh.cpp` 里那段逐字相同；放在这里让渲染与测试共用一份公式）。
 // `wc`（可选）= 调用线程自己的 provider 窗口克隆。**并行调用必须传**：不传就会去动共享缓存
@@ -137,7 +133,13 @@ struct Shape {
 inline int quantizeAngle(float deg) { return (int)std::round(deg * 100.0f); }
 
 // 建一个形状：参数、part 记录、局部包围盒（double，逐字同今天的组包围盒算法）。
-Shape buildShape(float sa, float ea, bool mid);
+// `gems` = trackStyle Gems（八边形宝石，几何与角度无关，见 Re_ADOJAS createGemsMesh）。
+// `styleWidth/styleLength` = trackStyle 的半宽/半长（Re_ADOJAS createTrackMesh 的 styleWidth/
+// styleLength：Basic/Neon/NeonLight 半宽 +0.025、半长 +0.02，Minimal 半长 −0.03）。
+// 默认值 = Standard，逐位保持原行为（tile_expansion 对拍不受影响）。
+Shape buildShape(float sa, float ea, bool mid,
+                 float styleWidth = TILE_WIDTH, float styleLength = TILE_LENGTH,
+                 bool gems = false);
 
 // ---- 形状表（GPU 端 = RGBA32F 纹理，texelFetch 读） --------------------
 // 布局：一行 kTexW 个 texel，每个形状 kTexelsPerShape 个 texel，第 (layer*kTileParts + part)

@@ -14,7 +14,7 @@
 // 输入（与 tile.vert 一致）：
 //   * aRecipe：静态配方表，每个 canonical 槽位一项 (part, layer*64+slot, k0, k1)；
 //   * aInstOffset / aShape / aIconBits：每实例（相机相对偏移 / 形状号 / 图标位）；
-//   * uSlotTex：每形状 `kSlots`(175) 个 texel 的 CPU 展开表 —— texel i = 槽位 i 的 (x, y)，
+//   * uSlotTex：每形状 `kSlots`(142) 个 texel 的 CPU 展开表 —— texel i = 槽位 i 的 (x, y)，
 //     行宽 kTexW（= `TileShape::kTexW`，写成常量省一个 uniform）。槽位号 = gl_VertexID
 //     （索引表里的值就是 canonical 槽位号，aRecipe 也按它排列）。
 
@@ -25,20 +25,28 @@ layout(location = 3) in float aIconBits;    // 每实例：bit0 twirl / bit1 ssU
 
 uniform sampler2D uSlotTex;
 const int kTexW = 1024;         // TileShape::kTexW
-const int kSlots = 175;         // TileShape::kTotalSlots（6 part × 2 层 + 3 图标 part × 17）
-const int kTileSlots = 124;     // 前 124 个是砖（描边 62 + 填充 62），之后是图标
+const int kSlots = 142;         // TileShape::kTotalSlots（7 part × 2 层；图标已改在片元里画）
+const int kTileSlots = 142;     // 描边 71 + 填充 71
 
 uniform mat4  uVP;
 uniform vec3  uFillColor;
 uniform vec3  uStrokeColor;
 uniform float uOpacity;
+// 逐实例砖色：uUseInstColor=1 时用实例色（ColorTrack），0 时用上面的 uniform（高亮/旧行为）。
+layout(location = 4) in vec3 aFillColor;
+layout(location = 5) in vec3 aStrokeColor;
+// MoveTrack：rot(弧度) / scaleX / scaleY / alpha | moveXY（所有砖默认 identity）
+layout(location = 6) in vec4 aXform;
+layout(location = 7) in vec2 aMove;
+layout(location = 8) in vec2 aPivot;   // 砖心相对砖起点（旋转/缩放枢轴）
+uniform float uUseInstColor;
 
 out vec3  vColor;
 out float vOpacity;
+out vec2  vIconLocal;   // 砖心局部坐标（图标在 FS 里画）
+out float vIconBits;
 
 // 图标（与 TileMesh.cpp 的 IR/IS/三种颜色一致；z 与砖共面，谁盖谁由索引表顺序决定）
-const float kIconZBase  = 0.0;
-const float kIconZExtra = 0.0;
 const vec3  kTwirlColor = vec3(0.502, 0.0, 0.502);
 const vec3  kSSUpColor  = vec3(1.0, 0.0, 0.0);
 const vec3  kSSDownColor= vec3(0.0, 0.0, 1.0);
@@ -57,28 +65,31 @@ void main() {
     // （与 TileShape::expand() 写出的 out.type 一致）
     int   v     = int(gl_VertexID);
     vec3  pos   = vec3(0.0);                  // 塌陷点
-    float type  = (v < 62) ? 0.0 : 1.0;
-    vec3  color = mix(uStrokeColor, uFillColor, type);
+    float type  = (v < 71) ? 0.0 : 1.0;
+    vec3  color = mix(mix(uStrokeColor, uFillColor, type),
+                      mix(aStrokeColor, aFillColor, type), uUseInstColor);
 
-    if (part > 5.5) {
-        // ---- 图标：算式与 tile.vert 相同（不含 fma，3.3 直接能算）----
-        bool tw = mod(aIconBits, 2.0) >= 1.0;
-        bool up = mod(floor(aIconBits / 2.0), 2.0) >= 1.0;
-        bool dn = floor(aIconBits / 4.0) >= 1.0;
-        bool on = (part < 6.5) ? tw : ((part < 7.5) ? up : dn);
-        if (on) {
-            float zo = (part < 6.5) ? kIconZBase
-                                    : (kIconZBase + (tw ? kIconZExtra : kIconZBase * 0.5));
-            pos = vec3(k0, k1, zo);
-            type = 1.0;
-            color = (part < 6.5) ? kTwirlColor : ((part < 7.5) ? kSSUpColor : kSSDownColor);
-        }
-    } else if (v < kTileSlots) {
+    {
         // ---- 砖：CPU 展开表 ----
         pos = vec3(slotPos(aShape, v), 0.0);
     }
 
     vColor = color;
-    vOpacity = uOpacity;
+    vIconLocal = pos.xy;   // 砖的局部原点就是砖心（形状以砖心为原点）
+    vIconBits  = aIconBits;
+    // stroke 层（z 更小=更近）压过 fill；同层同 z 的 part 由 GL_LESS 丢弃后画的那个。
+    pos.z -= (1.0 - type) * 2e-4;
+    // 图标与 fill **共面**（z=0）：不靠 z 偏移，靠第二趟 draw + GL_LEQUAL 压过 fill。
+    // 固定 z 偏移在"几百万砖同屏"时一定会穿透（可见窗口的 z 间距只有 1e-7 量级）。
+    if (aXform.x == 0.0 && aXform.y == 1.0 && aXform.z == 1.0) {
+        pos = vec3(pos.xy + aMove, pos.z);
+    } else {
+        vec2 q = pos.xy - aPivot;
+        q *= vec2(aXform.y, aXform.z);
+        float xc = cos(aXform.x), xs = sin(aXform.x);
+        q = vec2(q.x * xc - q.y * xs, q.x * xs + q.y * xc);
+        pos = vec3(q + aPivot + aMove, pos.z);
+    }
+    vOpacity = uOpacity * aXform.w;
     gl_Position = uVP * vec4(pos + aInstOffset, 1.0);
 }

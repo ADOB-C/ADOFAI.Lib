@@ -176,6 +176,9 @@ bool decompressLevelArchive(const char* data, size_t length, LevelArchiveKind ki
     case LevelArchiveKind::Plain:
         out.assign(data, length);
         return true;
+    case LevelArchiveKind::Adocao:
+        reason = "Adocao 容器由 archive backend 解码，不走 decompressLevelArchive";
+        return false;
     }
     reason = "unknown container";
     return false;
@@ -337,7 +340,6 @@ size_t ArchiveStream::size() const { return m_impl->len; }
 bool ArchiveStream::failed() const { return m_impl->failed; }
 bool ArchiveStream::stuck() const { return m_impl->stuck; }
 bool ArchiveStream::eof() const { return m_impl->eof; }
-size_t ArchiveStream::halfSize() const { return m_impl->half; }
 const std::string& ArchiveStream::error() const { return m_impl->error; }
 
 namespace archive {

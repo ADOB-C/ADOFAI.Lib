@@ -61,6 +61,11 @@ if(ADOFAI_LIB_ENABLE_RENDER)
                 "$<TARGET_FILE_DIR:adofai_geom_probe_test>/assets/shaders"
         COMMENT "拷贝 assets/shaders 到构建目录（geom_probe 按 CWD 找它）")
 
+    # 相机缩放的纯数学部分（`render/Camera.hpp` 里的投影/视口换算），不建 GL 上下文。
+    add_executable(adofai_camera_zoom_test camera_zoom_test.cpp)
+    target_link_libraries(adofai_camera_zoom_test PRIVATE ADOFAI::render)
+    add_test(NAME camera_zoom COMMAND adofai_camera_zoom_test)
+
     # 内嵌回退 GLSL 必须与 assets/shaders/* 逐字相同（PLAN.md §7 的铁律之一）。
     # 它只在资产缺失时才生效，所以漂移了正常构建永远不红 —— 必须机械校验。
     # 负向对照已验：改 assets 那边、或只改 Shaders.hpp 里的内嵌串，都会红并指出首个差异行。
@@ -217,6 +222,26 @@ add_executable(adofai_level_reload_test level_reload_test.cpp)
 target_link_libraries(adofai_level_reload_test PRIVATE ADOFAI::core)
 add_test(NAME level_reload
     COMMAND adofai_level_reload_test "${CMAKE_CURRENT_SOURCE_DIR}/charts/angles360.adofai")
+
+# 相机系统（2026-10-19 上游新增，都在 **core** 里 —— 它们只需要 LevelData/Timeline，不碰 GL）：
+# `camera_timeline` 验事件 → 关键帧 → 采样的映射；`camera` 用 `camera_gold.inc`（金标由上游
+# `gen_camera_gold.mjs` 从参考实现生成）逐位比对导演算出来的相机矩阵。
+add_executable(adofai_camera_timeline_test camera_timeline_test.cpp)
+target_link_libraries(adofai_camera_timeline_test PRIVATE ADOFAI::core)
+add_test(NAME camera_timeline COMMAND adofai_camera_timeline_test)
+
+add_executable(adofai_camera_test camera_test.cpp)
+target_link_libraries(adofai_camera_test PRIVATE ADOFAI::core)
+add_test(NAME camera COMMAND adofai_camera_test)
+
+# Easing（从 render/ 搬到 core/util/）+ 砖色模型：都是纯函数，金标逐位比对。
+add_executable(adofai_easing_test easing_test.cpp)
+target_link_libraries(adofai_easing_test PRIVATE ADOFAI::core)
+add_test(NAME easing COMMAND adofai_easing_test)
+
+add_executable(adofai_tile_color_test tile_color_test.cpp)
+target_link_libraries(adofai_tile_color_test PRIVATE ADOFAI::core)
+add_test(NAME tile_color COMMAND adofai_tile_color_test)
 
 # `releaseMemory()` 的**存活契约**：`tileBPMs` / `tileHasTwirl` / `tileHasSetSpeed` 必须原样留着
 # （图标位是绘制期由 `TileMesh::deriveRange()` 现算的）。上游 2026-10-17 就是因为清了后两张，

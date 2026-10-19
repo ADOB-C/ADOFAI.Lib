@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include "core/util/Env.hpp"
 #include <cstring>
 #include <string>
 #include <utility>
@@ -40,10 +41,7 @@ namespace adofai {
 namespace profile {
 
 inline bool enabled() {
-    static const bool on = [] {
-        const char* e = std::getenv("ADOCAO_PROFILE");
-        return e && e[0] != '\0' && e[0] != '0';
-    }();
+    static const bool on = env::flag("ADOCAO_PROFILE");
     return on;
 }
 
@@ -55,7 +53,6 @@ inline double msSince(Clock::time_point t0) {
 struct Entry {
     const char* name;
     double ms = 0.0;
-    long long hits = 0;
 };
 
 // 一帧的快照（段 + 这一帧自量耗时）
@@ -92,11 +89,10 @@ inline void add(const char* name, double ms) {
     for (Entry& e : v) {
         if (e.name == name || std::strcmp(e.name, name) == 0) {
             e.ms += ms;
-            ++e.hits;
             return;
         }
     }
-    v.push_back({name, ms, 1});
+    v.push_back({name, ms});
 }
 
 inline void frameBegin() {

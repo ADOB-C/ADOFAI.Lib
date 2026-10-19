@@ -29,7 +29,7 @@ namespace adocao {
 inline constexpr char kMagic[4] = {kAdocaoMagic[0], kAdocaoMagic[1], kAdocaoMagic[2], kAdocaoMagic[3]};
 static_assert(kAdocaoMagic[0] == 'A' && kAdocaoMagic[1] == 'D' && kAdocaoMagic[2] == 'O' &&
               kAdocaoMagic[3] == '1', "core 的 kAdocaoMagic 变了，archive 这边要一起改");
-inline constexpr uint16_t kVersion  = 3;   // v3：列改**分块容器**（每 4096 元素一块、块内自选编码、
+inline constexpr uint16_t kVersion  = 5;   // v5：MoveTrack 段加 eventTag（52→54 B，RepeatEvents 展开用）   // v3：列改**分块容器**（每 4096 元素一块、块内自选编码、
                                           //     帧级 zstd 与 seek 粒度解耦，见 AdocaoBlocked.hpp）
                                           // + Derived 段（PositionTrack/前缀状态 checkpoint，§8.8）
 inline constexpr uint16_t kMinReadVersion = 2;   // 读侧仍认 v2（双读）；更早的版本没有实现过
@@ -50,6 +50,11 @@ enum class SectionId : uint8_t {
     Preserved  = 6,   // 未识别成员的原始字节（decorations、未知 eventType）—— 供 ADOCAO-E 无损回写
     Derived    = 7,   // checkpoint（每 4096 层的续算状态，§8.8）：v2 不写，v3 起写
     ActionIndex = 8,  // 按层索引（③ 的"稀疏 checkpoint"）：每 4096 层一条 action 下标区间
+    Camera     = 9,   // MoveCamera 富事件（定长记录 38 B；docs/camera.md §4.1）
+    Repeat     = 10,  // RepeatEvents（定长记录 19 B；运镜展开用，docs/camera.md §2.3）
+    Colour     = 11,  // ColorTrack / RecolorTrack（v3 32 B / v4 50 B）
+    Flash      = 12,  // Flash（定长记录 32 B；全屏闪屏）
+    MoveTrack  = 13,  // MoveTrack（定长记录 52 B；轨道动画）
 };
 
 // 列/段的编码方式。`ColumnHeader::codec` 与 `SectionEntry::codec` 共用这一套。
@@ -59,7 +64,7 @@ enum class Codec : uint8_t {
     DeltaVarint   = 2,   // 差分 + zigzag varint（单调列，如 floor）
     Const         = 3,   // 整列同一个值（angleOffset / rotation / opacity 实测各只有 1 个取值）
     BitPack       = 4,   // 小枚举/位标志
-    JsonPassthrough = 5, // 兜底：原样文本（诊断/未知段用）
+    // 5 保留：曾计划 `JsonPassthrough`（原样文本），从未实现；读侧遇到 5 会明确失败。
     // —— 列级（写在 ColumnHeader.codec 里）——
     Rle = 6,            // 字典 + (下标, 游程长度)：抓"长游程"（直线型赫兹谱的 angleData、type/flag/val1/val2）
     DeltaRleVarint = 7, // 差分 + 对差分再取游程：抓"单调且差分恒定"（floor 恒 +1 → 十几字节）

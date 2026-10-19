@@ -23,6 +23,10 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
   格式见上游 `docs/adocao-format.md`），以及 Re_ADOJAS 的 **`.ilytx`**（xz(tar(ilybin))）
 - 容器一律按 **magic** 识别，不看扩展名（改过名/抹掉扩展名照样能读）
 - **时间线**：逐层起始时刻、时长、BPM 传播、中旋砖（`angleData = 999`）、SetSpeed/Twirl
+- **相机系统**：MoveCamera / RepeatEvents 的富事件 → 关键帧 → 采样（`core/camera/`，
+  纯计算不碰 GL），也提供 `camera` / `camera_timeline` / `camera_zoom` 三条金标测试
+- **砖色与闪屏**：trackStyle 的 fill/stroke 派生、ColorTrack/RecolorTrack 的补间、
+  Flash 的全屏闪屏（`core/level/TileColor`、`render/` 的 `flash` 着色器）
 - **大谱不靠蛮力**：角度可换**紧凑存储**（字典 + 位打包，MYC 实测 54 MB → 4.8 MB）、每砖结构
   可按块物化（`tilePositionAt`）、剔除可用**粗块 AABB 索引**（`render/CullIndex`）——
   三者都是"丢掉密集数组之后照样逐位正确"，各有独立的逐位对拍用例
@@ -39,7 +43,7 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 28/28
+ctest --test-dir build          # 默认 32/32
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
@@ -157,7 +161,11 @@ if (!adofai::exporter::exportLevel(level, "out.adocao", err, adofai::exporter::O
   —— 这些**逐位往返**，由 `ctest export_roundtrip` 对全部夹具 × 四种格式断言；
 * **未知 `eventType` 的 action 会没有** —— 两条解析路径在**读入时**就丢弃它们，不是导出丢的；
 * 未建模的 settings 键、`decorations`、注释、键序、数字字面量的写法（`1e2` 与 `100`）都不保留；
-* `pathData` 型的谱面导出后会**同时**带一份 `angleData`（保真优先于体积；要体积就用 `.adocao`）。
+* `pathData` 型的谱面导出后会**同时**带一份 `angleData`（保真优先于体积；要体积就用 `.adocao`）；
+* ⚠️ **五类富事件没有 `.adofai` 的 JSON 表示**：MoveCamera / RepeatEvents / ColorTrack+RecolorTrack /
+  Flash / MoveTrack 在 2026-10-18 起搬进了富结构（`cameraEvents` 等），ScaleRadius 更是只把结果
+  烘进砖位、原始事件都不留。这种谱 `exportLevel` 会**明确拒绝**写明文（`canExport()` 可以先问），
+  并告诉你要换 `.adocao` —— 绝不静默写出一个少了全部事件的文件。
 
 要**无损回写**（连未知成员一起保留）现在做不到 —— 那要等上游的 `Preserved` 段
 （[ADOCAO](https://github.com/ADOB-C/ADOCAO) 的 TODO ⑦）。`.adocao` 的完整格式规范
@@ -249,7 +257,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 28 条 / render=ON 32 条**（随模块开关增减）：
+**render=OFF 32 条 / render=ON 37 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|

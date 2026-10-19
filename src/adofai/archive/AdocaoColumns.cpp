@@ -144,9 +144,13 @@ const char* codecName(Codec c) {
         case Codec::DeltaVarint: return "DeltaVarint";
         case Codec::Const: return "Const";
         case Codec::BitPack: return "BitPack";
-        case Codec::JsonPassthrough: return "JsonPassthrough";
         case Codec::Rle: return "Rle";
         case Codec::DeltaRleVarint: return "DeltaRleVarint";
+        // 段级取值（16/17）不会从列头来 —— codecName 只打印列级。但枚举是同一个，
+        // 这里列全是为了让 -Wswitch 守住"新增列编码必须取名字"（漏了是编译警告，
+        // 不是运行期才发现）；不加 default 正是为了保住这个检查。
+        case Codec::SectionZstd: return "SectionZstd";
+        case Codec::SectionXz: return "SectionXz";
     }
     return "?";
 }

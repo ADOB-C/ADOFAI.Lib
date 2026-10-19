@@ -112,6 +112,10 @@ static std::string defaultHitsoundDir() {
 HitsoundManager::HitsoundManager() = default;
 HitsoundManager::~HitsoundManager() { m_buffer.clear(); }
 
+void HitsoundManager::setEnabled(bool enabled) {
+    m_enabled = enabled;
+}
+
 void HitsoundManager::init(const std::string& assetsDir) {
     m_assetsDir = withTrailingSlash(assetsDir.empty() ? defaultHitsoundDir() : assetsDir);
     LOG_D("HitsoundManager: assets dir = \"%s\"", m_assetsDir.c_str());
@@ -122,20 +126,6 @@ std::string HitsoundManager::hitsoundPath(const std::string& type) const {
     return fn ? (m_assetsDir + fn) : std::string();
 }
 
-void HitsoundManager::setHitsoundType(const std::string& type) {
-    if (m_hitsoundType == type) return;
-    m_hitsoundType = type;
-    m_synthesized = false;
-}
-
-void HitsoundManager::setVolume(float vol) {
-    m_volume = std::max(0.0f, std::min(100.0f, vol)) / 100.0f;
-}
-
-void HitsoundManager::setEnabled(bool enabled) {
-    m_enabled = enabled;
-    if (!enabled) stop();
-}
 
 
 bool HitsoundManager::readWav(const std::string& filepath,
@@ -159,7 +149,7 @@ bool HitsoundManager::readWav(const std::string& filepath,
     auto read16 = [&]() { if(p+2>end)return(uint16_t)0; uint16_t v; memcpy(&v,p,2); p+=2; return v; };
 
     if (memcmp(p, "RIFF", 4)) return false; p += 4;
-    uint32_t fs = read32();
+    read32();   // RIFF chunk size（不使用，但必须消费这 4 字节）
     if (memcmp(p, "WAVE", 4)) return false; p += 4;
 
     uint16_t bits=0, nch=0; uint32_t sr=0, dsize=0;
@@ -191,6 +181,11 @@ bool HitsoundManager::readWav(const std::string& filepath,
     s_wavRawCache[filepath] = raw;     // cache raw int16 for hard-clip mixing
     s_wavMeta[filepath] = { (int)sr, (int)nch };
     return true;
+}
+
+void HitsoundManager::setOutputSampleRate(int hz) {
+    // 合理范围：8k..384k（超出就保持默认，别把缓冲乘成一个天文数字）
+    if (hz >= 8000 && hz <= 384000) m_outputRate = hz;
 }
 
 bool HitsoundManager::preSynthesize(const std::vector<HitsoundTimestampGroup>& groups,
@@ -237,7 +232,7 @@ bool HitsoundManager::preSynthesize(const std::vector<HitsoundTimestampGroup>& g
     if (wavData.empty()) return false;
     if (onProgress) onProgress(5.0f);
 
-    int sr = AUDIO_SAMPLE_RATE;
+    int sr = m_outputRate;
     m_sampleRate = sr;
     int totalFrames = (int)((totalDuration + maxHitSec + 1.0f) * sr);
     size_t bufSize = (size_t)totalFrames * 2;
@@ -412,7 +407,7 @@ bool HitsoundManager::preSynthesizeRawPcm(const std::vector<float>& samples, dou
     // 注意：这条路径不查 m_enabled —— raw-PCM 是"音频本身"，不是打拍音，
     // 不该被 --no-hitsound 关掉（那种谱没有单独的 music 文件）。
     if (samples.size() < 2 || sourceRate < 1000.0) return false;
-    const int sr = AUDIO_SAMPLE_RATE;
+    const int sr = m_outputRate;
     m_sampleRate = sr;
     const double ratio = (double)sr / sourceRate;              // 源采样率 → 设备采样率
     const size_t frames = (size_t)((double)samples.size() * ratio);
@@ -433,11 +428,6 @@ bool HitsoundManager::preSynthesizeRawPcm(const std::vector<float>& samples, dou
     m_lastMixedHits = 0;
     m_synthesized = true;
     return true;
-}
-
-void HitsoundManager::reset() {
-    m_readCursor = 0;
-    m_playing = true;
 }
 
 void HitsoundManager::resetAt(float audioPosSec) {
@@ -467,7 +457,10 @@ bool HitsoundManager::writeWav(const std::string& filepath) {
     auto w32 = [&](uint32_t v) { fwrite(&v, 4, 1, f); };
     auto w16 = [&](uint16_t v) { fwrite(&v, 2, 1, f); };
     fwrite("RIFF", 1, 4, f); w32(riffSize); fwrite("WAVE", 1, 4, f);
-    fwrite("fmt ", 1, 4, f); w32(16); w16(1); w16(2); w32(AUDIO_SAMPLE_RATE); w32(AUDIO_SAMPLE_RATE * 4); w16(4); w16(16);
+    // 头部写**缓冲的真实采样率**（= m_sampleRate）。CLI 导出固定按 48000 合成（见 Application.cpp），
+    // 所以导出文件仍是 48k；游戏内播放则跟随设备率。
+    fwrite("fmt ", 1, 4, f); w32(16); w16(1); w16(2);
+    w32((uint32_t)m_sampleRate); w32((uint32_t)m_sampleRate * 4); w16(4); w16(16);
     fwrite("data", 1, 4, f); w32(dataSize);
     fwrite(raw.data(), sizeof(int16_t), raw.size(), f);
     fclose(f);

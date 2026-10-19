@@ -15,8 +15,8 @@
 // 轨道渲染：**1 实例 = 1 砖**，几何在 VS 里按"形状表"展开（见 render/TileShape.hpp 与
 // assets/shaders/tile.vert）。2026-10 之前是"每个形状一份 CPU 顶点汤 + 每形状一次 draw"。
 //
-// 一个实例画完整块砖 + 它的事件图标：canonical 顶点表 175 槽（砖 124 + 图标 51）、
-// 142 个三角形共用一份索引表，所以整条轨道**一次 draw** 画完（形状数不再决定 draw 次数：
+// 一个实例画完整块砖 + 它的事件图标：canonical 顶点表 193 槽（砖 142 + 图标 51）、
+// 158 个三角形（474 索引）共用一份索引表，所以整条轨道**一次 draw** 画完（形状数不再决定 draw 次数：
 // 之前 MYC 294 次、Singularity 8192 次、ADR 型全角度谱面会到十万次量级）。
 //
 // 常驻（每砖）≈ 14 B：形状号 4 + 世界坐标 8 + 图标位 1 + 可见位 1（TrackVis 才分配）；
@@ -29,7 +29,7 @@
 // 由先后决定。改成**按可见窗口归一化 Z** 之后（见 `tileZForIndex` 的说明）窗口内步长
 // ≈0.018 ≫ 深度分辨率 1.19e-5，并列基本消失。实测：像素门槛 51/51 逐字节不变，另在
 // 三种 Won't You + TNR + primer-final 上做了 16 帧 A/B（含"整张一帧"6,841 万块）
-// **全部逐字节相同**（`scripts/order-ab.sh`，钩子 `ADOCAO_DRAW_ORDER=grouped` 可回旧序）。
+// **全部逐字节相同**（要重做这个 A/B 就临时改提交顺序；旧钩子已随数组删除）。
 // 残留的理论情形：极端广角 + 屏幕上真的重合但颜色/图标不同的砖（那 16 帧没造出来）；
 // 但那时胜负也已是**确定**的（低层号在上），不再是 `unordered_map` 的迭代序。
 //
@@ -46,14 +46,9 @@ public:
     ~TileMesh();
     TileMesh(const TileMesh&) = delete;
     TileMesh& operator=(const TileMesh&) = delete;
-    TileMesh(TileMesh&&) noexcept;
-    TileMesh& operator=(TileMesh&&) noexcept;
 
-    // `shouldCancel`（可选）：后台构建时按块边界自查，返回 true 就提前放弃（④ 取消）。
-    // 用函数指针包装而不是 `Scheduler::CancelToken`，免得 render 头依赖调度器的完整类型。
     void build(const LevelData& level, const std::string& fillColorHex = "FFFFFF",
-               const std::string& strokeColorHex = "000000",
-               const std::function<bool()>* shouldCancel = nullptr);
+               const std::string& strokeColorHex = "000000");
     // **一次 draw** 画完砖与图标（图标 part 紧跟在自己那块砖的填充之后）—— 指数的索引表
     // 顺序就是"描边 → 填充 → 三个图标 part"。
     //
@@ -62,7 +57,26 @@ public:
     // 现在图标跟着砖走，在拖尾之前，拖尾正常盖在图标上。这个修复会让"图标与拖尾重叠"的像素
     // 与旧版不同（The Moon t=1s / MYC t=30s 等），是**预期内**的差异，基线已按新行为重存。
     // 视锥边界是**世界坐标** → double（float 在 x≈6.8e7 上会被量化到 8 砖，剔除边界跟着错）
-    void draw(double viewL, double viewR, double viewB, double viewT, double camX, double camY) const;
+    // 逐实例砖色（fill/stroke，0..255）。fn = nullptr 时实例色全 0，由 uniform 决定颜色
+    // （高亮/旧行为）。回调只对**可见列表**里的砖调用（每帧几百次），ctx 由调用方保证生命周期。
+    // 逐实例颜色：fill/stroke 为 RGB，alpha = 颜色自带的不透明度（8 位 hex 的 AA/255）。
+    using InstanceColorFn = void (*)(void* ctx, uint32_t tile, uint8_t fill[3], uint8_t stroke[3],
+                                     float* alpha);
+    // 逐实例变换（MoveTrack）：out = rot(弧度), scaleX, scaleY, alpha, moveX, moveY, pivotX, pivotY。
+    // pivot = 砖心相对砖起点的偏移（Re_ADOJAS 的几何以砖心为原点：旋转/缩放绕砖心）。
+    // fn=nullptr → 全部 identity（rot 0 / scale 1 / alpha 1 / move 0 / pivot 0）。
+    using InstanceXformFn = void (*)(void* ctx, uint32_t tile, float out[8]);
+    void draw(double viewL, double viewR, double viewB, double viewT, double camX, double camY,
+              InstanceColorFn colorFn = nullptr, void* colorCtx = nullptr,
+              InstanceXformFn xformFn = nullptr, void* xformCtx = nullptr) const;
+    // MoveTrack 的剔除外扩（最大位移 + 缩放已由 LevelData 折进 pad）。
+    void setMovePad(float pad) { m_movePad = pad; }
+    // 关卡时间：颜色/变换是时间驱动的（ColorTrack/RecolorTrack/MoveTrack），
+    // 相机静止时绘制列表不重建，必须在这里告诉 TileMesh"时间变了"。
+    void setTime(double t) { m_time = t; }
+    // 关卡里有没有"随时间变"的逐砖视觉（ColorTrack/RecolorTrack/MoveTrack）。
+    // 没有的话时间变化不用重算颜色/变换（省掉整帧的逐砖开销）。
+    void setAnimNeeded(bool v) { m_animNeeded = v; }
     // 视口像素高度（每帧由 app 侧设入；LOD 用它算"每世界单位多少像素"）
     void setViewportHeightPx(int h) const { m_viewportH = h; }
     // 抓帧（确定性）模式：LOD 步长只能由"当前视口 + 两段式"决定，**不许用上一帧的反馈种子**
@@ -74,8 +88,8 @@ public:
     // （验收：`ADOCAO_CPU_GEOMETRY=1 scripts/capture-gate.sh check` 51/51）。
     // 必须在 build() 之前设（buildStaticGL 里据此决定建哪张纹理）。
     void setCpuGeometry(bool b) { m_cpuGeometry = b; }
-    bool cpuGeometry() const { return m_cpuGeometry; }
     void drawHighlightedTile(int tileIdx, double camX, double camY) const;
+
     void setVisibleThreshold(int lastVisible);
     // ④ 剔除粗块粒度（层/块；0 = 关闭索引走全扫）。必须在 build() 之前设。
     // 默认 4096；`ADOCAO_CULL_BLOCK=<n>` 环境变量可覆盖（测试/A-B 钩子）。
@@ -91,16 +105,15 @@ public:
         std::vector<uint8_t> icon;
     };
     // 形状键打包：sa/ea 各 20 位（角度 ×100，范围 ±18000），mid 1 位 —— 无冲突
-    static uint64_t packShapeKey(float sa, float ea, bool mid) {
+    static uint64_t packShapeKey(float sa, float ea, bool mid, uint8_t style = 0) {
         const uint32_t qa = (uint32_t)(int32_t)std::lround(sa * 100.0f) & 0xFFFFFu;
         const uint32_t qe = (uint32_t)(int32_t)std::lround(ea * 100.0f) & 0xFFFFFu;
-        return (uint64_t)qa | ((uint64_t)qe << 20) | (mid ? (1ull << 40) : 0ull);
+        return (uint64_t)qa | ((uint64_t)qe << 20) | (mid ? (1ull << 40) : 0ull) |
+               ((uint64_t)(style & 0x7u) << 41);
     }
     // `wc`（可选）= 调用线程自己的 provider 窗口克隆（并行剔除用；nullptr = 共享缓存）
     void deriveRange(const LevelData& level, int64_t i0, int64_t i1, DerivedRange& out,
                      FloorWindowCache* wc = nullptr) const;
-    const std::unordered_map<uint64_t, uint32_t>& shapeIndex() const { return m_shapeIndex; }
-    int  cullBlockFloors() const { return m_cullFloors; }
     void updateVisibleRange(int startTile, int endTile, bool visible);
     bool empty() const;
 
@@ -110,15 +123,16 @@ public:
 
     // 验收/诊断用：上次 draw 实际画了多少个实例、形状数
     int lastDrawnInstances() const { return m_lastDrawn; }
-    size_t shapeCount() const { return m_shapes.size(); }
 
 private:
     void destroy();
     void buildStaticGL();
-    void buildSlotTable();          // CPU 回退：每形状 175 个槽位坐标 → RG32F 纹理
+    void buildSlotTable();          // CPU 回退：每形状 193 个槽位坐标 → RG32F 纹理
     void destroyStaticGL();
     void ensureDrawList(double vl, double vr, double vb, double vt, double camX, double camY) const;
     void uploadIfNeeded() const;
+    // 按 m_time 重算 m_listColors / m_listXform（列表本身不变）。
+    void fillInstanceAnim() const;
     void cullRange(size_t begin, size_t end, double vl, double vr, double vb, double vt,
                    double camX, double camY, std::vector<uint32_t>& outTiles,
                    std::vector<float>& outAttr, size_t stride = 1) const;
@@ -157,7 +171,6 @@ private:
     void limitWarn(const char* what, size_t n) const;
     static bool limitOffCache();
     mutable double m_limitWarnAt = 0.0;
-    mutable bool m_windowChecked = false;   // 逐砖直比只做一次
 
     // ③ 切片 4：四支每砖数组**不再常驻**（13 B/砖，MYC 84 MB）—— 剔除时按 4096 窗口物化。
     // 砖位置：**块相对 float**。绝对世界坐标是 double，直接窄化成 float 会在超大谱上塌掉 ——
@@ -172,7 +185,6 @@ private:
     // ④ 粗块 AABB 索引（每 4096 层一块，0.0098 B/砖）。n 小于阈值时留空 → 走原来的全扫，
     // 小谱行为与改造前**逐字相同**。查询按块升序 → 输出与全扫逐元素相同（`cull_index` 用例）。
     CullIndex m_cullIndex;
-    double m_cullHalf = 0.0;
     int m_cullFloors = (int)CullIndex::kBlockFloors;   // 见 setCullBlockFloors                  // 建表用的保守半边长（= 所有形状 localBBox 的最大外扩）
     // （图标位随窗口派生：bit0 twirl / bit1 ssUp / bit2 ssDown）
     // TrackVis 的逐砖可见位：**位图**（原 1 B/砖 = MYC 6.8 MB → 0.85 MB）。lazy：只有 TrackVis 需要。
@@ -185,6 +197,14 @@ private:
     // ---- 每帧可见实例（compaction 结果；draw 时上传）----
     mutable std::vector<uint32_t> m_listTiles;
     mutable std::vector<float> m_listAttr;    // 5 float/实例：offX offY offZ shape iconBits
+    mutable std::vector<float> m_listColors;  // 6 float/实例：fill rgb + stroke rgb（0..1）
+    mutable std::vector<float> m_listXform;   // 8 float/实例：rot, sX, sY, alpha, moveX, moveY, pivotX, pivotY
+    mutable InstanceXformFn m_xformFn = nullptr;
+    mutable void* m_xformCtx = nullptr;
+    float m_movePad = 0.0f;      // 剔除外扩（MoveTrack）
+    mutable std::vector<float> m_instData;    // 上传用交错缓冲：11 float/实例（5 + 6）
+    mutable InstanceColorFn m_colorFn = nullptr;
+    mutable void* m_colorCtx = nullptr;
     mutable bool m_listValid = false;
     mutable int m_viewportH = 720;
     mutable size_t m_lodStride = 1;      // 当前帧的抽稀步长（1 = 不抽）
@@ -194,6 +214,9 @@ private:
     mutable double m_vl = 0, m_vr = 0, m_vb = 0, m_vt = 0;
     mutable int m_visibleThreshold = 0x7fffffff;
     mutable int m_lastDrawn = 0;
+    bool m_animNeeded = true;
+    double m_time = 0.0;         // 当前关卡时间（由 draw 调用方设置）
+    mutable double m_animTime = 0.0;   // 逐实例颜色/变换是按哪个时间算的
     mutable double m_prevCamX = 0, m_prevCamY = 0;
 };
 

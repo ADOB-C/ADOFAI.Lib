@@ -2,6 +2,7 @@
 #include "glad/gl_core.hpp"
 #include "render/CullSIMD.hpp"
 #include "core/util/Logger.hpp"
+#include "core/util/Env.hpp"
 #include "core/util/Profile.hpp"
 #include "core/util/Scheduler.hpp"
 #include <algorithm>
@@ -42,14 +43,37 @@ using TileShape::Shape;
 namespace {
 
 // 形状键：与改造前 `TileMesh::build` 逐字相同（0.01° 网格 + 中旋标志）
-struct GeoKey { int sa, ea; bool mid; };
+// trackStyle → 几何档位（Re_ADOJAS createTrackMesh 的 styleWidth/styleLength 微调）。
+// 0 Standard / 1 Neon / 2 NeonLight / 3 Basic / 4 Gems / 5 Minimal / 6 其它（按 Standard）
+inline uint8_t styleIdOf(const std::string& s) {
+    if (s == "Neon") return 1;
+    if (s == "NeonLight") return 2;
+    if (s == "Basic") return 3;
+    if (s == "Gems") return 4;
+    if (s == "Minimal") return 5;
+    return 0;
+}
+inline float styleWidthOf(uint8_t id) {
+    return (id == 1 || id == 2 || id == 3) ? TILE_WIDTH + 0.025f : TILE_WIDTH;
+}
+inline float styleLengthOf(uint8_t id) {
+    if (id == 1 || id == 2 || id == 3) return TILE_LENGTH + 0.02f;
+    if (id == 5) return TILE_LENGTH - 0.03f;
+    return TILE_LENGTH;
+}
+inline uint8_t styleOfTile(const LevelData& lv, int64_t i) {
+    const LevelData::ColorEvent* e = lv.colorEventAt(i);
+    return styleIdOf(e ? e->cfg.style : lv.settings.trackStyle);
+}
+
+struct GeoKey { int sa, ea; bool mid; uint8_t style; };
 struct GeoKeyHash {
     size_t operator()(const GeoKey& k) const {
         return (size_t)k.sa * 31 + (size_t)k.ea * 17 + (size_t)k.mid;
     }
 };
 bool operator==(const GeoKey& a, const GeoKey& b) {
-    return a.sa == b.sa && a.ea == b.ea && a.mid == b.mid;
+    return a.sa == b.sa && a.ea == b.ea && a.mid == b.mid && a.style == b.style;
 }
 
 inline void pushAttr(std::vector<float>& v, float ox, float oy, float oz, uint32_t shape, uint8_t bits) {
@@ -60,40 +84,6 @@ inline void pushAttr(std::vector<float>& v, float ox, float oy, float oz, uint32
 } // namespace
 
 TileMesh::~TileMesh() { destroy(); }
-
-TileMesh::TileMesh(TileMesh&& o) noexcept
-    : m_vao(o.m_vao), m_recipeVbo(o.m_recipeVbo), m_ebo(o.m_ebo), m_instVbo(o.m_instVbo),
-      m_shapeTex(o.m_shapeTex), m_instCapacity(o.m_instCapacity), m_shapeRows(o.m_shapeRows),
-      m_slotTex(o.m_slotTex), m_slotRows(o.m_slotRows), m_cpuGeometry(o.m_cpuGeometry),
-      m_shapes(std::move(o.m_shapes)), m_level(o.m_level),
-      m_chunkX(std::move(o.m_chunkX)), m_chunkY(std::move(o.m_chunkY)),
-      m_visible(std::move(o.m_visible)),
-      m_cullIndex(std::move(o.m_cullIndex)), m_cullHalf(o.m_cullHalf), m_nTiles(o.m_nTiles) {
-    std::memcpy(m_fill, o.m_fill, sizeof m_fill);
-    std::memcpy(m_stroke, o.m_stroke, sizeof m_stroke);
-    o.m_vao = o.m_recipeVbo = o.m_ebo = o.m_instVbo = o.m_shapeTex = 0;
-    o.m_slotTex = 0;
-    o.m_nTiles = 0;
-}
-
-TileMesh& TileMesh::operator=(TileMesh&& o) noexcept {
-    if (this != &o) {
-        destroy();
-        m_vao = o.m_vao; m_recipeVbo = o.m_recipeVbo; m_ebo = o.m_ebo;
-        m_instVbo = o.m_instVbo; m_shapeTex = o.m_shapeTex;
-        m_instCapacity = o.m_instCapacity; m_shapeRows = o.m_shapeRows;
-        m_shapes = std::move(o.m_shapes);
-        m_level = o.m_level;
-        m_chunkX = std::move(o.m_chunkX); m_chunkY = std::move(o.m_chunkY);
-        m_visible = std::move(o.m_visible);
-        m_cullIndex = std::move(o.m_cullIndex); m_cullHalf = o.m_cullHalf; m_nTiles = o.m_nTiles;
-        std::memcpy(m_fill, o.m_fill, sizeof m_fill);
-        std::memcpy(m_stroke, o.m_stroke, sizeof m_stroke);
-        o.m_vao = o.m_recipeVbo = o.m_ebo = o.m_instVbo = o.m_shapeTex = 0;
-        o.m_nTiles = 0;
-    }
-    return *this;
-}
 
 void TileMesh::destroyStaticGL() {
     if (m_instVbo) glDeleteBuffers(1, &m_instVbo);
@@ -170,7 +160,7 @@ void TileMesh::deriveRange(const LevelData& level, int64_t i0, int64_t i1, Deriv
         out.posY[k] = (float)(p[1] - m_chunkY[c]);
         float sa, ea; bool mid;
         TileShape::keyForTile(level, (int)i, sa, ea, mid, wc);
-        const auto it = m_shapeIndex.find(packShapeKey(sa, ea, mid));
+        const auto it = m_shapeIndex.find(packShapeKey(sa, ea, mid, styleOfTile(level, i)));
         out.shape[k] = (it != m_shapeIndex.end()) ? it->second : 0u;
         // 图标位：与 buildIcons 的判据逐字相同（Twirl / SetSpeed 的 1.05、0.95 阈值）
         const bool ht = i < (int64_t)level.tileHasTwirl.size() && level.tileHasTwirl[(size_t)i];
@@ -185,7 +175,7 @@ void TileMesh::deriveRange(const LevelData& level, int64_t i0, int64_t i1, Deriv
 }
 
 void TileMesh::build(const LevelData& level, const std::string& fillColorHex,
-                     const std::string& strokeColorHex, const std::function<bool()>* shouldCancel) {
+                     const std::string& strokeColorHex) {
     destroy();
     hexToColor3(fillColorHex, m_fill);
     hexToColor3(strokeColorHex, m_stroke);
@@ -202,17 +192,16 @@ void TileMesh::build(const LevelData& level, const std::string& fillColorHex,
     // 全部是 stroke/fill 谁在上面）。改造前没有 reserve，这里也不加。
     std::unordered_map<GeoKey, std::vector<int>, GeoKeyHash> shapeGroups;
     for (int i = 0; i < n; i++) {
-        if (shouldCancel && (i & 0xFFFF) == 0 && (*shouldCancel)()) return;   // ④ 取消：块边界
         float sa, ea; bool mid;
         TileShape::keyForTile(level, i, sa, ea, mid);
-        GeoKey k{(int)std::round(sa * 100.0f), (int)std::round(ea * 100.0f), mid};
+        const uint8_t style = styleOfTile(level, i);
+        GeoKey k{(int)std::round(sa * 100.0f), (int)std::round(ea * 100.0f), mid, style};
         shapeGroups[k].push_back(i);
     }
     LOG_D("TileMesh::build: %zu unique shapes", shapeGroups.size());
 
     m_shapes.reserve(shapeGroups.size());
     m_level = &level;
-    m_windowChecked = false;
 
     // 每块一个 double 原点（取块内第一块砖的位置）—— 块内偏移用 float 才不丢精度（见 .hpp）
     const size_t chunkSize = (size_t)1 << kPosChunkShift;
@@ -228,10 +217,11 @@ void TileMesh::build(const LevelData& level, const std::string& fillColorHex,
 
     for (auto& kv : shapeGroups) {
         const GeoKey& key = kv.first;
-        std::vector<int>& tileIndices = kv.second;
         const uint32_t shapeIdx = (uint32_t)m_shapes.size();
-        m_shapes.push_back(TileShape::buildShape(key.sa / 100.0f, key.ea / 100.0f, key.mid));
-        m_shapeIndex[packShapeKey(key.sa / 100.0f, key.ea / 100.0f, key.mid)] = shapeIdx;
+        m_shapes.push_back(TileShape::buildShape(key.sa / 100.0f, key.ea / 100.0f, key.mid,
+                                                 styleWidthOf(key.style), styleLengthOf(key.style),
+                                                 key.style == 4));   // 4 = Gems
+        m_shapeIndex[packShapeKey(key.sa / 100.0f, key.ea / 100.0f, key.mid, key.style)] = shapeIdx;
     }
     // 绘制顺序 = **按砖号（= 层号）升序**（2026-10-15 起）：所以不再需要 `m_drawOrder` 那支
     // 4 B/砖 的排列数组（MYC 27 MB、2³¹−1 外推 **8.6 GB**）——剔除与上传**直接用下标**（下标即
@@ -249,13 +239,12 @@ void TileMesh::build(const LevelData& level, const std::string& fillColorHex,
         half = std::max(half, std::abs(sh.localMinY));
         half = std::max(half, std::abs(sh.localMaxY));
     }
-    m_cullHalf = half;
     // 粒度：设置值（`--cull-block` / wizard Graphics 页）→ env 钩子覆盖 → 合法范围钳制。
     // 0 或负数 = 关闭索引（走全扫）。
     int wantFloors = m_cullFloors;
     if (const char* e = std::getenv("ADOCAO_CULL_BLOCK")) {
         wantFloors = std::atoi(e);
-        LOG_I("cull-index: ADOCAO_CULL_BLOCK=%d 覆盖设置值 %d", wantFloors, m_cullFloors);
+        LOG_W("cull-index: ADOCAO_CULL_BLOCK=%d 覆盖了设置的粒度 %d（env 优先）", wantFloors, m_cullFloors);
     }
     if (wantFloors != 0) {
         const int clamped = wantFloors < kCullMinBlockFloors ? kCullMinBlockFloors
@@ -301,7 +290,7 @@ void TileMesh::build(const LevelData& level, const std::string& fillColorHex,
     LOG_D("TileMesh::build: draws=1 (tiles+icons 同一次), shapes=%zu, tiles=%d", m_shapes.size(), n);
 
     // 【诊断，env 门控】网格数据哈希：用来 A/B "按块物化 provider" 是否改变了装配结果
-    if (std::getenv("ADOCAO_MESH_DUMP")) {
+    if (env::flag("ADOCAO_MESH_DUMP")) {
         auto fnv = [](const void* p, size_t bytes) {
             const uint8_t* q = (const uint8_t*)p;
             uint64_t h = 1469598103934665603ull;
@@ -399,9 +388,9 @@ void TileMesh::buildStaticGL() {
     glBindBuffer(GL_ARRAY_BUFFER, m_instVbo);
     size_t cap = (size_t)std::min(m_nTiles, 65536);
     if (cap == 0) cap = 1;
-    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(cap * 5 * sizeof(float)), nullptr, GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(cap * 19 * sizeof(float)), nullptr, GL_DYNAMIC_DRAW);
     m_instCapacity = cap;
-    const GLsizei stride = 5 * sizeof(float);
+    const GLsizei stride = 19 * sizeof(float);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
     glVertexAttribDivisor(1, 1);
@@ -411,6 +400,23 @@ void TileMesh::buildStaticGL() {
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, stride, (void*)(4 * sizeof(float)));
     glVertexAttribDivisor(3, 1);
+    // 逐实例 fill / stroke（0..1）。uniform uUseInstColor=0 时 shader 忽略它们（高亮/旧路径）。
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, stride, (void*)(5 * sizeof(float)));
+    glVertexAttribDivisor(4, 1);
+    glEnableVertexAttribArray(5);
+    glVertexAttribPointer(5, 3, GL_FLOAT, GL_FALSE, stride, (void*)(8 * sizeof(float)));
+    glVertexAttribDivisor(5, 1);
+    // MoveTrack 的逐实例变换：rot, scaleX, scaleY, alpha | moveX, moveY
+    glEnableVertexAttribArray(6);
+    glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, stride, (void*)(11 * sizeof(float)));
+    glVertexAttribDivisor(6, 1);
+    glEnableVertexAttribArray(7);
+    glVertexAttribPointer(7, 2, GL_FLOAT, GL_FALSE, stride, (void*)(15 * sizeof(float)));
+    glVertexAttribDivisor(7, 1);
+    glEnableVertexAttribArray(8);
+    glVertexAttribPointer(8, 2, GL_FLOAT, GL_FALSE, stride, (void*)(17 * sizeof(float)));
+    glVertexAttribDivisor(8, 1);
     glBindVertexArray(0);
     LOG_D("TileMesh::buildStaticGL: shapeTex %dx%d, %d 槽位, %d 索引", TileShape::kTexW, m_shapeRows,
           TileShape::kTotalSlots, TileShape::kIndexCount);
@@ -543,7 +549,7 @@ void TileMesh::cullRange(size_t begin, size_t end, double vl, double vr, double 
 
 void TileMesh::ensureDrawList(double viewL, double viewR, double viewB, double viewT,
                               double camX, double camY) const {
-    const double m = 20.0;   // 与改造前同一个视锥外扩
+    const double m = 20.0 + (double)m_movePad;   // 外扩含 MoveTrack 最大位移/放大
     const double vl = viewL - m, vr = viewR + m, vb = viewB - m, vt = viewT + m;
     // 一律 double 比：float 在 x≈6.8e7 上 ulp 就是 8，`> 0.5f` 会退化成"只要变了就重建"
     // （虽然结果碰巧对，但边界与被比较的量都该是 double —— 见 docs/rendering.md 坐标约定）
@@ -569,7 +575,6 @@ void TileMesh::ensureDrawList(double viewL, double viewR, double viewB, double v
     if (lodStride != m_lodStride) {
         LOG_I("lod: 每单位 %.3f px → 抽稀步长 %zu（此前 %zu）", pxPerUnit, lodStride, m_lodStride);
         m_listValid = false;                               // 步长一变，列表作废
-        m_lodStride = lodStride;
     }
     m_lodStride = lodStride;
     const double tolX = (viewR - viewL) / 1024.0, tolY = (viewT - viewB) / 1024.0;
@@ -591,19 +596,13 @@ void TileMesh::ensureDrawList(double viewL, double viewR, double viewB, double v
             // 见类注释；像素门槛 51/51 + 巨谱 16 帧 A/B 已验证）。
             std::vector<std::pair<size_t, size_t>> ranges;   // [begin, end)
             size_t candidates = 0;
-            size_t hitBlocks = 0;
-            int64_t lastBlk = -1;
             m_cullIndex.forEachHitBlock(vl, vr, vb, vt, [&](uint32_t f, uint32_t c) {
                 ranges.emplace_back((size_t)f, (size_t)f + (size_t)c);
                 candidates += c;
-                const int64_t blk = (int64_t)((size_t)f / m_cullIndex.floorsPerBlock());
-                if (blk != lastBlk) { lastBlk = blk; ++hitBlocks; }
             });
             // ⑦ 闸①：候选太多**降级**为"只画离相机最近的块"（累计候选 ≤ 预算）。
             // 不能直接不画 —— 那会整帧黑屏（只剩行星/拖尾），实测被用户一眼看出来 ✗。
-            const bool limitOff = std::getenv("ADOCAO_CULL_LIMIT") &&
-                                  std::atoi(std::getenv("ADOCAO_CULL_LIMIT")) == 0;
-            if (!limitOff && candidates > kMaxCullCandidates * m_lodStride) {
+            if (!limitOffCache() && candidates > kMaxCullCandidates * m_lodStride) {
                 limitWarn("cull-candidates", candidates);
                 const size_t before = candidates;
                 // 按层号顺序边剔边收，**可见数够 kMaxInstances 就停** —— 工作量由输出封顶。
@@ -628,7 +627,6 @@ void TileMesh::ensureDrawList(double viewL, double viewR, double viewB, double v
                 LOG_W("cull-limit: 降级为就近细块 —— 候选 %zu → %zu 块 / 可见 %zu（预算 %zu）",
                       before, ranges.size(), m_listTiles.size(), kMaxInstances);
                 ranges.clear();          // 让下面的并行段变成空操作（列表已经填好了）
-                candidates = 0;
             }
 
             // 把命中块按"约 CHUNK 块砖"切成并行任务（保持块序）
@@ -727,7 +725,7 @@ void TileMesh::ensureDrawList(double viewL, double viewR, double viewB, double v
         // 两段式 LOD：第一遍按当前步长剔完，若**真实可见数**超预算 → 用
         // `ceil(可见/预算)` 重剔一遍（确定性、无历史依赖；第二遍只测 可见/步长 ≈ 预算 块砖，
         // 所以很便宜）。这比"截断列表"好：截断丢掉的是整片区域，抽稀是均匀采样 ✓。
-        if (m_listTiles.size() > kMaxInstances && !limitOffCache() && m_lodStride == lodStride) {
+        if (m_listTiles.size() > kMaxInstances && !limitOffCache()) {
             const size_t visible1 = m_listTiles.size();
             const size_t need = (visible1 + kMaxInstances - 1) / kMaxInstances;
             if (need > m_lodStride) {
@@ -754,6 +752,10 @@ void TileMesh::ensureDrawList(double viewL, double viewR, double viewB, double v
             m_listTiles.resize(kMaxInstances);
             m_listAttr.resize(kMaxInstances * 5);
         }
+        // 逐实例砖色：只对**可见列表**算（每帧几百砖）。颜色与相机无关，只在重建列表时算；
+        // 平移分支不动颜色。fn=nullptr → 全 0，shader 走 uniform（高亮/旧行为）。
+        fillInstanceAnim();
+        m_animTime = m_time;
         m_listValid = true;
         m_listUploaded = false;
     } else {
@@ -768,6 +770,39 @@ void TileMesh::ensureDrawList(double viewL, double viewR, double viewB, double v
     m_prevCamX = camX; m_prevCamY = camY;
 }
 
+void TileMesh::fillInstanceAnim() const {
+    const size_t count = m_listTiles.size();
+    m_listXform.assign(count * 8, 0.0f);
+    m_listColors.assign(count * 6, 0.0f);
+    for (size_t k = 0; k < count; k++) {
+        float* x = &m_listXform[k * 8];
+        x[1] = x[2] = x[3] = 1.0f;   // scaleX/Y = 1, alpha = 1
+    }
+    if (m_xformFn) {
+        profile::Scoped _x("animXform");
+        for (size_t k = 0; k < count; k++) {
+            float out[8] = {0, 1, 1, 1, 0, 0, 0, 0};
+            m_xformFn(m_xformCtx, m_listTiles[k], out);
+            float* x = &m_listXform[k * 8];
+            for (int i = 0; i < 8; i++) x[i] = out[i];
+        }
+    }
+    if (m_colorFn) {
+        profile::Scoped _c("animColor");
+        for (size_t k = 0; k < count; k++) {
+            uint8_t fill[3] = {0, 0, 0}, stroke[3] = {0, 0, 0};
+            float alpha = 1.0f;
+            m_colorFn(m_colorCtx, m_listTiles[k], fill, stroke, &alpha);
+            float* c = &m_listColors[k * 6];
+            c[0] = fill[0] / 255.0f; c[1] = fill[1] / 255.0f; c[2] = fill[2] / 255.0f;
+            c[3] = stroke[0] / 255.0f; c[4] = stroke[1] / 255.0f; c[5] = stroke[2] / 255.0f;
+            m_listXform[k * 8 + 3] *= alpha;   // 颜色 alpha × MoveTrack opacity
+        }
+    }
+    if (env::flag("ADOCAO_ANIM_DEBUG") && (m_colorFn || m_xformFn))
+        LOG_I("anim-debug: t=%.3f n=%zu", m_time, count);
+}
+
 // ---- draw ------------------------------------------------------------
 
 void TileMesh::uploadIfNeeded() const {
@@ -776,19 +811,47 @@ void TileMesh::uploadIfNeeded() const {
     if (count > m_instCapacity) {   // 可见数由屏幕决定，容量按需增长
         size_t cap = std::max(count, m_instCapacity * 2);
         glBindBuffer(GL_ARRAY_BUFFER, m_instVbo);
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(cap * 5 * sizeof(float)), nullptr, GL_DYNAMIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(cap * 19 * sizeof(float)), nullptr, GL_DYNAMIC_DRAW);
         m_instCapacity = cap;
     }
+    // 交错：5 float 几何/形状 + 6 float 颜色（颜色数组与可见列表同序）
+    m_instData.resize(count * 19);
+    for (size_t k = 0; k < count; k++) {
+        float* d = &m_instData[k * 19];
+        const float* g = &m_listAttr[k * 5];
+        for (int i = 0; i < 5; i++) d[i] = g[i];
+        const float* c = &m_listColors[k * 6];
+        for (int i = 0; i < 6; i++) d[5 + i] = c[i];
+        const float* x = &m_listXform[k * 8];
+        for (int i = 0; i < 8; i++) d[11 + i] = x[i];
+    }
     glBindBuffer(GL_ARRAY_BUFFER, m_instVbo);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(count * 5 * sizeof(float)), m_listAttr.data());
+    glBufferSubData(GL_ARRAY_BUFFER, 0, (GLsizeiptr)(count * 19 * sizeof(float)), m_instData.data());
+    if (env::flag("ADOCAO_COLOR_DEBUG") && count > 0)
+        LOG_I("inst-debug: n=%zu colors0=%.3f,%.3f,%.3f,%.3f,%.3f,%.3f inst0=%.2f,%.2f,%.2f,%.0f,%.0f,%.3f,%.3f,%.3f",
+              count, m_listColors[0], m_listColors[1], m_listColors[2], m_listColors[3],
+              m_listColors[4], m_listColors[5], m_instData[0], m_instData[1], m_instData[2],
+              m_instData[3], m_instData[4], m_instData[5], m_instData[6], m_instData[7]);
     m_listUploaded = true;
 }
 
 void TileMesh::draw(double viewL, double viewR, double viewB, double viewT,
-                    double camX, double camY) const {
+                    double camX, double camY, InstanceColorFn colorFn, void* colorCtx,
+                    InstanceXformFn xformFn, void* xformCtx) const {
     m_lastDrawn = 0;
     if (empty() || !m_vao) return;
+    m_colorFn = colorFn;
+    m_colorCtx = colorCtx;
+    m_xformFn = xformFn;
+    m_xformCtx = xformCtx;
     { profile::Scoped _s("cull"); ensureDrawList(viewL, viewR, viewB, viewT, camX, camY); }
+    // 相机静止时列表不重建，但颜色/变换是时间驱动的（ColorTrack/MoveTrack）→ 时间变了就重算+重传。
+    if (m_animNeeded && (m_colorFn || m_xformFn) && m_animTime != m_time) {
+        profile::Scoped _anim("anim");
+        fillInstanceAnim();
+        m_animTime = m_time;
+        m_listUploaded = false;
+    }
     const size_t count = m_listTiles.size();
     m_lastDrawn = (int)count;
     if (count == 0) return;
@@ -799,7 +862,9 @@ void TileMesh::draw(double viewL, double viewR, double viewB, double viewT,
     // 所以不用设 uniform —— 只要保证绑的是**当前程序要的那张**。
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_cpuGeometry ? m_slotTex : m_shapeTex);
-    // 一次画完：砖三角形 + 紧跟着的图标三角形（索引表布局，kIndexCount = 426）
+    // 一次画完：砖三角形 + 紧跟着的图标三角形（同一份索引表、同一个 draw）。
+    // 图标与 fill 共面（z=0），靠 **GL_LEQUAL**（同深度后画的赢）压过 fill；
+    // 不靠固定 z 偏移 —— 几百万砖同屏时可见窗口的 z 间距只有 1e-7 量级，任何常量都会穿透。
     glDrawElementsInstanced(GL_TRIANGLES, TileShape::kIndexCount, GL_UNSIGNED_SHORT, nullptr,
                             (GLsizei)count);
     glBindVertexArray(0);
@@ -812,16 +877,18 @@ void TileMesh::drawHighlightedTile(int ti, double cX, double cY) const {
     const size_t base = (size_t)d->first, k = (size_t)ti - base;
     const double wx = m_chunkX[(size_t)ti >> kPosChunkShift] + (double)d->posX[k];
     const double wy = m_chunkY[(size_t)ti >> kPosChunkShift] + (double)d->posY[k];
-    float attr[5];
+    float attr[19] = {0};
+    attr[12] = attr[13] = attr[14] = 1.0f;   // scaleX/Y, alpha（rot/move/pivot 保持 0）
     attr[0] = (float)(wx - cX);
     attr[1] = (float)(wy - cY);
     attr[2] = tileZForIndex(ti, m_nTiles);
     attr[3] = (float)d->shape[k];
     attr[4] = (float)d->icon[k];
+    // 后 6 个（fill/stroke）留给 shader：高亮用 uniform（uUseInstColor=0），这里全 0。
     glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_instVbo);
     if (m_instCapacity < 1) {
-        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(5 * sizeof(float)), nullptr, GL_DYNAMIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(19 * sizeof(float)), nullptr, GL_DYNAMIC_DRAW);
         m_instCapacity = 1;
     }
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(attr), attr);

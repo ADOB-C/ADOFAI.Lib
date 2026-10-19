@@ -32,7 +32,6 @@ struct Sec {
     uint16_t flags = 0;
     const uint8_t* p = nullptr;
     size_t size = 0;
-    uint64_t elems = 0;      // elemCount（元素个数）
     size_t elems0Raw = 0;    // 段表里的 rawSize（解压后的长度，用来核对）
     bool materialized = false;
 };
@@ -41,16 +40,10 @@ struct Sec {
 // 为什么按需：③ 的窗口化加载一次只要"一个段里的一块"，不该顺手把整份谱的所有段都摊开
 // （那也是 O(n) 的瞬时内存，正是 D1 要消掉的东西）。
 struct Container {
-    const uint8_t* data = nullptr;
-    size_t length = 0;
     uint16_t version = 0;
     std::vector<Sec> secs;
     std::vector<std::string> plain;      // 段级解压的后备（decompressLevelArchive 的出参是 string）
 
-    const Sec* find(SectionId id) const {
-        for (const Sec& s : secs) if (s.id == (uint8_t)id) return &s;
-        return nullptr;
-    }
     size_t indexOf(uint8_t id) const {
         for (size_t i = 0; i < secs.size(); ++i) if (secs[i].id == id) return i;
         return (size_t)-1;
@@ -91,8 +84,6 @@ struct Container {
 
 bool openContainer(const uint8_t* data, size_t length, Container& out, std::string& err) {
     out = Container{};
-    out.data = data;
-    out.length = length;
     if (!data || !have(length, 0, sizeof(Header))) {
         err = "文件太短（连文件头都不完整）";
         return false;
@@ -141,7 +132,6 @@ bool openContainer(const uint8_t* data, size_t length, Container& out, std::stri
         s.flags = (uint16_t)(e[2] | ((uint16_t)e[3] << 8));
         const uint64_t off = rdU64(e + 4);
         const uint64_t size = rdU64(e + 12);
-        s.elems = rdU64(e + 28);
         s.elems0Raw = (size_t)rdU64(e + 20);   // rawSize
         if (!have(length, (size_t)off, (size_t)size)) {
             err = "段 " + std::to_string(s.id) + " 越界（偏移 " + std::to_string(off) + " 长度 " +
@@ -208,6 +198,21 @@ bool parseSettings(const std::vector<std::string>& pool, const uint8_t* p, size_
     if (off + 2 <= n) {
         if (!idx(s.songFilename)) return false;
     }
+    // 再往后是运镜用的两个字段；旧文件没有 → 保留默认值（同 songFilename 的规则）。
+    if (off + 4 <= n) {
+        if (!f32(s.pitch)) return false;
+    }
+    if (off + 1 <= n) {
+        if (!u8(b)) return false;
+        s.legacyCamRelativeTo = (b != 0);
+    }
+    // 砖色（2026-10-17 追加在末尾）：旧文件读不到就保留默认值。
+    if (off + 2 <= n) { if (!idx(s.trackStyle)) return false; }
+    if (off + 2 <= n) { if (!idx(s.trackColorType)) return false; }
+    if (off + 2 <= n) { if (!idx(s.trackColorPulse)) return false; }
+    if (off + 4 <= n) { if (!f32(s.trackColorAnimDuration)) return false; }
+    if (off + 4 <= n) { if (!f32(s.trackPulseLength)) return false; }
+    if (off + 4 <= n) { if (!f32(s.trackGlowIntensity)) return false; }
     return true;
 }
 
@@ -396,6 +401,151 @@ bool unpackLevel(const uint8_t* data, size_t length, LevelData& out, std::string
     }
 
     // ⑤ pathData
+    // ⑥ 相机 / 重复事件（可选段：没有 = 这张谱没有运镜，空 vector 就是正确结果）
+    if (const Sec* camSec = findSec(secs, SectionId::Camera)) {
+        constexpr size_t kRec = 38;   // floor(4) id(4) angleOffset/duration/x/y/rotation/zoom(24)
+                                      // ease/relativeTo/flags/disabled(4) tag(2)
+        if (camSec->size % kRec != 0) { err = "camera 段长度不是记录整数倍"; return false; }
+        const size_t cnt = camSec->size / kRec;
+        out.cameraEvents.clear();
+        out.cameraEvents.reserve(cnt);
+        for (size_t i = 0; i < cnt; ++i) {
+            const uint8_t* q = camSec->p + i * kRec;
+            LevelData::CameraEvent e;
+            e.floor = (int32_t)rdU32(q);
+            e.id = rdU32(q + 4);
+            std::memcpy(&e.angleOffset, q + 8, 4);
+            std::memcpy(&e.duration, q + 12, 4);
+            std::memcpy(&e.x, q + 16, 4);
+            std::memcpy(&e.y, q + 20, 4);
+            std::memcpy(&e.rotation, q + 24, 4);
+            std::memcpy(&e.zoom, q + 28, 4);
+            e.ease = q[32];
+            e.relativeTo = q[33];
+            e.flags = q[34];
+            e.disabled = q[35];
+            const uint16_t ti = rdU16(q + 36);
+            if (ti >= out.actionStrTable.size()) { err = "camera 段 tag 下标越界"; return false; }
+            e.tag = (ti == 0) ? std::string() : out.actionStrTable[ti];
+            out.cameraEvents.push_back(std::move(e));
+        }
+    }
+    if (const Sec* repSec = findSec(secs, SectionId::Repeat)) {
+        constexpr size_t kRec = 19;   // floor(4) repetitions/interval/gapLength(12) flags(1) tag(2)
+        if (repSec->size % kRec != 0) { err = "repeat 段长度不是记录整数倍"; return false; }
+        const size_t cnt = repSec->size / kRec;
+        out.repeatEvents.clear();
+        out.repeatEvents.reserve(cnt);
+        for (size_t i = 0; i < cnt; ++i) {
+            const uint8_t* q = repSec->p + i * kRec;
+            LevelData::RepeatEvent r;
+            r.floor = (int32_t)rdU32(q);
+            std::memcpy(&r.repetitions, q + 4, 4);
+            std::memcpy(&r.interval, q + 8, 4);
+            std::memcpy(&r.gapLength, q + 12, 4);
+            r.flags = q[16];
+            const uint16_t ti = rdU16(q + 17);
+            if (ti >= out.actionStrTable.size()) { err = "repeat 段 tag 下标越界"; return false; }
+            r.tag = (ti == 0) ? std::string() : out.actionStrTable[ti];
+            out.repeatEvents.push_back(std::move(r));
+        }
+    }
+    if (const Sec* mvSec = findSec(secs, SectionId::MoveTrack)) {
+        const size_t kRec = (version >= 5) ? 54 : 52;   // v5 追加 eventTag(u16)
+        if (mvSec->size % kRec != 0) { err = "movetrack 段长度不是记录整数倍"; return false; }
+        const size_t cnt = mvSec->size / kRec;
+        out.moveTrackEvents.clear();
+        out.moveTrackEvents.reserve(cnt);
+        for (size_t i = 0; i < cnt; ++i) {
+            const uint8_t* q = mvSec->p + i * kRec;
+            LevelData::MoveTrackEvent e;
+            e.floor = (int32_t)rdU32(q);
+            std::memcpy(&e.angleOffset, q + 4, 4);
+            std::memcpy(&e.durBeats, q + 8, 4);
+            e.gap = (int32_t)rdU32(q + 12);
+            e.startOff = (int32_t)rdU32(q + 16);
+            e.endOff = (int32_t)rdU32(q + 20);
+            e.startRel = (int8_t)q[24];
+            e.endRel = (int8_t)q[25];
+            e.ease = q[26];
+            e.flags = q[27];
+            std::memcpy(&e.offX, q + 28, 4);
+            std::memcpy(&e.offY, q + 32, 4);
+            std::memcpy(&e.rotDeg, q + 36, 4);
+            std::memcpy(&e.scaleX, q + 40, 4);
+            std::memcpy(&e.scaleY, q + 44, 4);
+            std::memcpy(&e.opacity, q + 48, 4);
+            if (version >= 5) {
+                const uint16_t ti = (uint16_t)(q[52] | (q[53] << 8));
+                if (ti >= out.actionStrTable.size()) { err = "movetrack 段 tag 下标越界"; return false; }
+                if (ti != 0) e.tag = out.actionStrTable[ti];
+            }
+            out.moveTrackEvents.push_back(e);
+        }
+    }
+    if (const Sec* flSec = findSec(secs, SectionId::Flash)) {
+        constexpr size_t kRec = 32;
+        if (flSec->size % kRec != 0) { err = "flash 段长度不是记录整数倍"; return false; }
+        const size_t cnt = flSec->size / kRec;
+        out.flashEvents.clear();
+        out.flashEvents.reserve(cnt);
+        for (size_t i = 0; i < cnt; ++i) {
+            const uint8_t* q = flSec->p + i * kRec;
+            LevelData::FlashEvent e;
+            e.floor = (int32_t)rdU32(q);
+            std::memcpy(&e.duration, q + 4, 4);
+            std::memcpy(&e.angleOffset, q + 8, 4);
+            e.plane = q[12]; e.style = q[13]; e.ease = q[14];
+            e.startColor[0] = q[16]; e.startColor[1] = q[17]; e.startColor[2] = q[18];
+            e.endColor[0] = q[20];   e.endColor[1] = q[21];   e.endColor[2] = q[22];
+            std::memcpy(&e.startOpacity, q + 24, 4);
+            std::memcpy(&e.endOpacity, q + 28, 4);
+            out.flashEvents.push_back(e);
+        }
+    }
+    if (const Sec* colSec = findSec(secs, SectionId::Colour)) {
+        // v3 = 32 B（floor + 5 池下标 + 4 float + ease/flags）
+        // v4 = 50 B（再追加 startOff/endOff/startRel/endRel/gapLength/angleOffset）
+        const size_t kRec = (version >= 4) ? 50 : 32;
+        if (colSec->size % kRec != 0) { err = "colour 段长度不是记录整数倍"; return false; }
+        const size_t cnt = colSec->size / kRec;
+        out.colorEvents.clear();
+        out.colorEvents.reserve(cnt);
+        for (size_t i = 0; i < cnt; ++i) {
+            const uint8_t* q = colSec->p + i * kRec;
+            LevelData::ColorEvent e;
+            e.floor = (int32_t)rdU32(q);
+            const uint16_t it = rdU16(q + 4), ic = rdU16(q + 6), is = rdU16(q + 8),
+                           ip = rdU16(q + 10), ist = rdU16(q + 12);
+            if (it >= out.actionStrTable.size() || ic >= out.actionStrTable.size() ||
+                is >= out.actionStrTable.size() || ip >= out.actionStrTable.size() ||
+                ist >= out.actionStrTable.size()) { err = "colour 段池下标越界"; return false; }
+            e.cfg.colorType = (it == 0) ? std::string("Single") : out.actionStrTable[it];
+            e.cfg.color = (ic == 0) ? std::string("debb7b") : out.actionStrTable[ic];
+            e.cfg.secondary = (is == 0) ? std::string("ffffff") : out.actionStrTable[is];
+            e.cfg.pulse = (ip == 0) ? std::string("None") : out.actionStrTable[ip];
+            e.cfg.style = (ist == 0) ? std::string("Standard") : out.actionStrTable[ist];
+            std::memcpy(&e.cfg.animDuration, q + 14, 4);
+            std::memcpy(&e.cfg.pulseLength, q + 18, 4);
+            std::memcpy(&e.cfg.glowIntensity, q + 22, 4);
+            std::memcpy(&e.duration, q + 26, 4);
+            e.ease = q[30];
+            e.flags = q[31];
+            if (version >= 4) {
+                e.startOff = (int32_t)rdU32(q + 32);
+                e.endOff = (int32_t)rdU32(q + 36);
+                e.startRel = (int8_t)q[40];
+                e.endRel = (int8_t)q[41];
+                e.gapLength = (int32_t)rdU32(q + 42);
+                std::memcpy(&e.angleOffset, q + 46, 4);
+            }
+            e.cfg.startFloor = e.floor;
+            e.cfg.startTime = 0.0;
+            e.order = (uint32_t)i;
+            out.colorEvents.push_back(std::move(e));
+        }
+    }
+
     const Sec* pathSec = findSec(secs, SectionId::PathData);
     if (pathSec && pathSec->size) {
         if (!have(pathSec->size, 0, 8)) {

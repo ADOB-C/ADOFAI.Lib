@@ -196,6 +196,33 @@ rsync 是按 `core archive audio …` 逐目录拷的，本来也不会碰它。
 逐字相同。于是"路径坏了退回内嵌串"这个失败是**无害的**（渲染结果一样）。
 真正让上游那笔变成静默 bug 的是"路径坏了 **+ 回退串滞后**"，而后半截在库里被那道护栏堵住了。
 
+### 第五次对齐（9ac56ec，110 个提交）：模型跑到了导出模块前面
+
+上游把**五类事件搬进了富结构**：`cameraEvents`（MoveCamera）、`repeatEvents`、`colorEvents`
+（ColorTrack/RecolorTrack）、`flashEvents`、`moveTrackEvents` —— 外加 `ScaleRadius`（只把结果
+烘进 `tiles[i].position`，**原始事件都不留**）。`Settings` 也多了 8 个字段（砖色模型 + `pitch`
++ `legacyCamRelativeTo`）。
+
+对 `.adocao` 没影响：它有第 9~13 段专门存前五类（ScaleRadius 除外，那是上游的设计）。
+但**`.adofai` 的 JSON 没有这几类事件的表示** —— 导出会静默丢掉它们。实测：
+`tests/charts/camera_basic.adofai`（MoveCamera ×2）与 `neon_alpha.adofai`（ColorTrack ×2）
+在改动前是**静默丢事件、测试全绿**的（把 `canExport` 强制改成 `true` 复现过：0 处失败）。
+
+处理（本轮已完成）：
+1. `Settings` 的 8 个新字段进写方与 `modelDigest`（漏一个就是静默降级，`songFilename` 的教训）；
+2. 新增 `canExport()`：五类富事件或 ScaleRadius 非空时**明确拒绝**写明文，`err` 里列出
+   "是哪几类、各多少条"，并指向 `.adocao`。三条 JSON 路径都先过这道闸；
+3. `.adocao` 的自检从"比 `modelDigest`"改成 **"再打一次包，字节必须完全相同"** —— 判据
+   **字段无关**：unpack 丢了任何一项，第二次 pack 就一定不同。这比逐字段枚举强（枚举那套
+   每加一类事件就要跟一次，漏了就是"自检绿灯但数据已经丢了"）；
+4. 测试按两种情况断言：能表示 → 往返指纹；不能表示 → 必须**失败且原因指名道姓**。
+   另加一条 `canExport` 与模型现状的对照（"说能写、但谱里含富事件" → 红），
+   防它自己漂。
+
+**还没做的**：把这五类事件写成 JSON。那是一件独立的工作（要把 ease id ↔ 名字、
+relativeTo/disabled/flags、TileColorConfig 各字段、颜色/透明度归一化都映射回去），
+不是一次对齐能顺手带完的。在它落地之前，含这些事件的谱只能导出成 `.adocao`。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

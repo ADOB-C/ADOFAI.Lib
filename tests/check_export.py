@@ -58,7 +58,7 @@ def run(args):
 # ─────────────────────────── 独立建模投影 ───────────────────────────
 # 这一节是"库建模了什么"的**第二份表述**。改动它请同时改 src/adofai/export/LevelJsonWriter.cpp。
 
-# settings 的 20 个建模字段与默认值（默认值取解析器的默认，用于"键缺席"的情形）。
+# settings 的 28 个建模字段与默认值（默认值取解析器的默认，用于"键缺席"的情形）。
 SETTINGS_DEFAULTS = {
     "version": 15,
     # 模型字段叫 `songFilename`，`.adofai` 里的键是 `song`（解析器还接受 `songFilename` 当回退，
@@ -75,6 +75,15 @@ SETTINGS_DEFAULTS = {
     "hitsoundVolume": 100.0,
     "trackColor": "debb7b",
     "secondaryTrackColor": "ffffff",
+    # 2026-10-18 上游加的 8 个（砖色模型 + 音高 + 相机的老语义开关）
+    "trackColorType": "Single",
+    "trackColorPulse": "None",
+    "trackColorAnimDuration": 2.0,
+    "trackPulseLength": 10.0,
+    "trackStyle": "Standard",
+    "trackGlowIntensity": 100.0,
+    "pitch": 100.0,
+    "legacyCamRelativeTo": False,
     "backgroundColor": "000000",
     "stickToFloors": True,
     "planetEase": "Linear",
@@ -85,6 +94,7 @@ SETTINGS_DEFAULTS = {
 }
 FLOAT_SETTINGS = {
     "bpm", "offset", "zoom", "rotation", "hitsoundVolume", "beatsBehind", "beatsAhead",
+    "trackColorAnimDuration", "trackPulseLength", "trackGlowIntensity", "pitch",
 }
 # 模型字段名 → `.adofai` 里的键名（只有不一致的才需要写）
 MODEL_TO_JSON = {"songFilename": "song"}
@@ -98,7 +108,7 @@ SETTINGS_NOT_MODELED = {
     "songFilename",        # `song` 的备选拼写，值会写进模型的 songFilename
     "artist",              # 只影响编辑器显示
     "levelDesc",           # 同上
-    "trackStyle",          # 同上
+    # `trackStyle` 2026-10-18 起**已建模**（砖色模型要用），所以从这份清单里挪走了。
 }
 KNOWN_TYPES = {
     "Twirl", "SetSpeed", "PositionTrack", "SetHitsound", "Bookmark", "Pause", "AnimateTrack",
@@ -305,7 +315,8 @@ def main():
 
         # 导出物必须自带全部建模 settings 键（自描述，不靠默认值补）
         if sorted(exported_doc.get("settings", {}).keys()) != sorted(SETTINGS_DEFAULTS.keys()):
-            fail(f"{tag}: 导出的 settings 键集合不是那 {len(SETTINGS_DEFAULTS)} 个建模字段")
+            fail(f"{tag}: 导出的 settings 键集合不是那 {len(SETTINGS_DEFAULTS)} 个建模字段"
+                 f"（导出 {sorted(exported_doc.get('settings', {}).keys())}）")
 
         # ---- ⑥ 确定性 ----
         plain2 = os.path.join(out_dir, f"{tag}.again.adofai")

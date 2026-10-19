@@ -42,9 +42,19 @@ uniform mat4  uVP;
 uniform vec3  uFillColor;
 uniform vec3  uStrokeColor;
 uniform float uOpacity;
+// 逐实例砖色：uUseInstColor=1 时用实例色（ColorTrack），0 时用上面的 uniform（高亮/旧行为）。
+layout(location = 4) in vec3 aFillColor;
+layout(location = 5) in vec3 aStrokeColor;
+// MoveTrack：rot(弧度) / scaleX / scaleY / alpha | moveXY（所有砖默认 identity）
+layout(location = 6) in vec4 aXform;
+layout(location = 7) in vec2 aMove;
+layout(location = 8) in vec2 aPivot;   // 砖心相对砖起点（旋转/缩放枢轴）
+uniform float uUseInstColor;
 
 out vec3  vColor;
 out float vOpacity;
+out vec2  vIconLocal;   // 砖心局部坐标（图标在 FS 里画）
+out float vIconBits;
 
 #ifdef GEOM_PROBE
 // 逐位对拍模式：把 (局部坐标, type) 写到像素上。见 tests/geom_probe_test.cpp ——
@@ -53,27 +63,18 @@ out vec4 vProbe;
 uniform vec2 uProbeSize;   // (W, H)：像素画布尺寸
 #endif
 
-// 图标（与 TileMesh.cpp 的 IR/IS/三种颜色一致）
-// z 偏移曾经是 0.002 / 0.003，那是**错的**：砖与砖的间距只有 kMaxTileZ/(n-1)
-// （677 万层时 1.3e-6），抬高 0.002 等于让图标穿透前面约 1500 块砖（5564 层的谱也穿透 1 块多）。
-// 现在与砖**完全共面**：谁盖谁由绘制序决定（索引表：描边 → 填充 → twirl → ssUp → ssDn）——
-// 和砖自己的描边/填服用的是同一套机制（GL_LEQUAL，同深度靠后来者赢）。
-const float kIconZBase  = 0.0;
-const float kIconZExtra = 0.0;
-const vec3  kTwirlColor = vec3(0.502, 0.0, 0.502);
-const vec3  kSSUpColor  = vec3(1.0, 0.0, 0.0);
-const vec3  kSSDownColor= vec3(0.0, 0.0, 1.0);
-
+// 图标：**不再有独立几何** —— 与 Re_ADOJAS 一样画在砖的**片元**里（tile.frag），
+// 所以这里只把"砖心局部坐标 + iconBits"传给 FS。没有 z、没有额外 part、没有额外 draw。
 // 单独舍入的乘积：`fma(a,b,0)` 就是正确舍入的 a*b（与参考实现里单独一条 fmul 同值），
 // 而裸的 `a*b` 会被编译器（合法地）融合进旁边那次加法，差 1 ULP。
 float rp(float a, float b) { return fma(a, b, 0.0); }
 
 // 活动位掩码的 6 个 bit（与 TileShape::partActive 的 P_CIRCLE..P_PENT 对应）
-const float maskbits[6] = float[6](1.0, 2.0, 4.0, 8.0, 16.0, 32.0);
+const float maskbits[7] = float[7](1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0);
 
 // 取 (形状, code) 那条记录的 8 个 float（code = layer*6 + part；一个形状 25 个 texel）
 void fetchRec(float shape, float code, out vec4 A, out vec4 B) {
-    int t = int(shape) * 25 + int(code) * 2;
+    int t = int(shape) * 29 + int(code) * 2;
     ivec2 c0 = ivec2(t % kTexW, t / kTexW);
     int t1 = t + 1;
     ivec2 c1 = ivec2(t1 % kTexW, t1 / kTexW);
@@ -91,30 +92,15 @@ void main() {
 
     vec3  pos   = vec3(0.0);                  // 塌陷点
     float type  = layer;                      // 0 = 描边，1 = 填充
-    vec3  color = mix(uStrokeColor, uFillColor, layer);
+    vec3  color = mix(mix(uStrokeColor, uFillColor, layer),
+                      mix(aStrokeColor, aFillColor, layer), uUseInstColor);
 
-    if (part > 5.5) {
-        // ---- 图标（颜色/ Z 只由 part + 是否同时有 twirl 决定）----
-        bool tw = mod(aIconBits, 2.0) >= 1.0;
-        bool up = mod(floor(aIconBits / 2.0), 2.0) >= 1.0;
-        bool dn = floor(aIconBits / 4.0) >= 1.0;
-        bool on = (part < 6.5) ? tw : ((part < 7.5) ? up : dn);
-        if (on) {
-            // 与 TileMesh::buildIcons 同式：twirl 用 kIconZBase，SetSpeed 用
-            // kIconZBase + (有 twirl ? kIconZExtra : kIconZBase*0.5)；实例偏移的 z 里是砖的 Z，
-            // 所以最终 z = 砖 Z + 这里的 zo（两个变量的相加，逐位等于参考的 tz + zo）。
-            float zo = (part < 6.5) ? kIconZBase
-                                    : (kIconZBase + (tw ? kIconZExtra : kIconZBase * 0.5));
-            pos = vec3(k0, k1, zo);
-            type = 1.0;
-            color = (part < 6.5) ? kTwirlColor : ((part < 7.5) ? kSSUpColor : kSSDownColor);
-        }
-    } else {
+    {
         vec4 A, B;
-        fetchRec(aShape, layer * 6.0 + part, A, B);
+        fetchRec(aShape, layer * 7.0 + part, A, B);
         // 活动位掩码（形状表每个形状的最后一个 texel；bit i = part i 活动）。与 CPU 的
         // TileShape::partActive() 同源 —— 这里写成查表而不是 mode 的 switch，是为了不引入分支。
-        int t = int(aShape) * 25 + 24;
+        int t = int(aShape) * 29 + 28;
         float mask = texelFetch(uShapeTex, ivec2(t % kTexW, t / kTexW), 0).x;
         float bit = maskbits[int(part + 0.5)];
         if (mod(floor(mask / bit), 2.0) >= 0.5) {
@@ -159,7 +145,7 @@ void main() {
                 else if (s == 1) pos = vec3(fma(-w, m2, fma(l, m1, mx)), fma(w, m1, fma(l, m2, my)), 0.0);
                 else if (s == 2) pos = vec3(fma(-w, m2, mx), fma(w, m1, my), 0.0);
                 else             pos = vec3(fma(w, m2, mx), fma(-w, m1, my), 0.0);
-            } else {
+            } else if (part < 5.5) {
                 // PENT：中旋五边形。结构与 EXT4 **不同**（同长相的算式，编译器在不同上下文里
                 // 选了不同的一步融合）—— 两项式 = fma(l,m1, rp(w,m2)) + mx，单项式 = rp(w,m) + mx。
                 float mx = A.x, my = A.y, m1 = A.z, m2 = A.w, w = B.x, l = B.y;
@@ -170,12 +156,37 @@ void main() {
                 else if (s == 4) pos = vec3(-(rp(w, m1)) + mx, -(rp(w, m2)) + my, 0.0);
                 else if (s == 5) pos = vec3(rp(w, m2) + mx, -(rp(w, m1)) + my, 0.0);
                 else             pos = vec3(-(rp(w, m2)) + mx, rp(w, m1) + my, 0.0);
+            } else {
+                // GEM：八边形宝石（与 CIRCLE 同式，配方常量是 8 边形单位顶点）
+                if (s == 0) { pos = vec3(A.x, A.y, 0.0); }
+                else        { pos = vec3(fma(k0, A.z, A.x), fma(k1, A.z, A.y), 0.0); }
             }
         }
     }
 
     vColor = color;
-    vOpacity = uOpacity;
+    // 图标位置：砖心（aPivot）在变换后落在 aPivot + aMove
+    vIconLocal = pos.xy;   // 砖的局部原点就是砖心（形状以砖心为原点）
+    vIconBits  = aIconBits;
+
+#ifndef GEOM_PROBE
+    // stroke 层（z 更小=更近）压过 fill；同层同 z 的 part 由 GL_LESS 丢弃后画的那个，
+    // 避免半透明砖内部 part 自重叠被混合两次（2026-10-18：单砖内部暗阶梯）。
+    pos.z -= (1.0 - layer) * 2e-4;
+    // 图标与 fill **共面**（z=0）：不靠 z 偏移，靠第二趟 draw + GL_LEQUAL 压过 fill。
+    // 固定 z 偏移在"几百万砖同屏"时一定会穿透（可见窗口的 z 间距只有 1e-7 量级）。
+    if (aXform.x == 0.0 && aXform.y == 1.0 && aXform.z == 1.0) {
+        pos = vec3(pos.xy + aMove, pos.z);          // 纯位移：逐位同旧路径
+    } else {
+        // 旋转/缩放绕**砖心**（aPivot = 0.5×方向）：和 tile_cpu.vert 同一算式。
+        vec2 q = pos.xy - aPivot;
+        q = vec2(q.x * aXform.y, q.y * aXform.z);
+        float xc = cos(aXform.x), xs = sin(aXform.x);
+        q = vec2(fma(q.x, xc, -(q.y * xs)), fma(q.x, xs, q.y * xc));
+        pos = vec3(q + aPivot + aMove, pos.z);
+    }
+#endif
+    vOpacity = uOpacity * aXform.w;
 
 #ifdef GEOM_PROBE
     // 一个"顶点"画在像素 (gl_VertexID, gl_InstanceID) 上：顶点号 = canonical 槽号，
@@ -191,11 +202,28 @@ void main() {
 )";
 
 constexpr const char* kTileFragSrc = R"(#version 330 core
-in vec3 vColor;
+in vec3  vColor;
 in float vOpacity;
+in vec2  vIconLocal;   // 砖心局部坐标（单位：砖）
+in float vIconBits;    // bit0 twirl / bit1 ssUp / bit2 ssDn
 out vec4 fragColor;
+
+// 图标画在砖的**片元**里（Re_ADOJAS instanced.frag 的同一条路）：
+// 同一个片元、同一个 draw，没有独立几何、没有 z、透明度天然跟砖走。
+const vec3 kTwirlColor = vec3(0.502, 0.0, 0.502);
+const vec3 kSSUpColor  = vec3(1.0, 0.0, 0.0);
+const vec3 kSSDownColor= vec3(0.0, 0.0, 1.0);
+const float kIconRadius = 0.11;   // 参考的 uIconSize=0.44 是**贴图**尺寸，字形只占中间一块；我们画实心圆，取 0.11
+
 void main() {
-    fragColor = vec4(vColor, vOpacity);
+    vec3 color = vColor;
+    int bits = int(vIconBits + 0.5);
+    if (bits != 0 && length(vIconLocal) <= kIconRadius) {
+        if      ((bits & 1) != 0) color = kTwirlColor;
+        else if ((bits & 2) != 0) color = kSSUpColor;
+        else                      color = kSSDownColor;
+    }
+    fragColor = vec4(color, vOpacity);
 }
 )";
 
@@ -219,7 +247,7 @@ constexpr const char* kTileCpuVertSrc = R"(#version 330 core
 // 输入（与 tile.vert 一致）：
 //   * aRecipe：静态配方表，每个 canonical 槽位一项 (part, layer*64+slot, k0, k1)；
 //   * aInstOffset / aShape / aIconBits：每实例（相机相对偏移 / 形状号 / 图标位）；
-//   * uSlotTex：每形状 `kSlots`(175) 个 texel 的 CPU 展开表 —— texel i = 槽位 i 的 (x, y)，
+//   * uSlotTex：每形状 `kSlots`(142) 个 texel 的 CPU 展开表 —— texel i = 槽位 i 的 (x, y)，
 //     行宽 kTexW（= `TileShape::kTexW`，写成常量省一个 uniform）。槽位号 = gl_VertexID
 //     （索引表里的值就是 canonical 槽位号，aRecipe 也按它排列）。
 
@@ -230,20 +258,28 @@ layout(location = 3) in float aIconBits;    // 每实例：bit0 twirl / bit1 ssU
 
 uniform sampler2D uSlotTex;
 const int kTexW = 1024;         // TileShape::kTexW
-const int kSlots = 175;         // TileShape::kTotalSlots（6 part × 2 层 + 3 图标 part × 17）
-const int kTileSlots = 124;     // 前 124 个是砖（描边 62 + 填充 62），之后是图标
+const int kSlots = 142;         // TileShape::kTotalSlots（7 part × 2 层；图标已改在片元里画）
+const int kTileSlots = 142;     // 描边 71 + 填充 71
 
 uniform mat4  uVP;
 uniform vec3  uFillColor;
 uniform vec3  uStrokeColor;
 uniform float uOpacity;
+// 逐实例砖色：uUseInstColor=1 时用实例色（ColorTrack），0 时用上面的 uniform（高亮/旧行为）。
+layout(location = 4) in vec3 aFillColor;
+layout(location = 5) in vec3 aStrokeColor;
+// MoveTrack：rot(弧度) / scaleX / scaleY / alpha | moveXY（所有砖默认 identity）
+layout(location = 6) in vec4 aXform;
+layout(location = 7) in vec2 aMove;
+layout(location = 8) in vec2 aPivot;   // 砖心相对砖起点（旋转/缩放枢轴）
+uniform float uUseInstColor;
 
 out vec3  vColor;
 out float vOpacity;
+out vec2  vIconLocal;   // 砖心局部坐标（图标在 FS 里画）
+out float vIconBits;
 
 // 图标（与 TileMesh.cpp 的 IR/IS/三种颜色一致；z 与砖共面，谁盖谁由索引表顺序决定）
-const float kIconZBase  = 0.0;
-const float kIconZExtra = 0.0;
 const vec3  kTwirlColor = vec3(0.502, 0.0, 0.502);
 const vec3  kSSUpColor  = vec3(1.0, 0.0, 0.0);
 const vec3  kSSDownColor= vec3(0.0, 0.0, 1.0);
@@ -262,29 +298,32 @@ void main() {
     // （与 TileShape::expand() 写出的 out.type 一致）
     int   v     = int(gl_VertexID);
     vec3  pos   = vec3(0.0);                  // 塌陷点
-    float type  = (v < 62) ? 0.0 : 1.0;
-    vec3  color = mix(uStrokeColor, uFillColor, type);
+    float type  = (v < 71) ? 0.0 : 1.0;
+    vec3  color = mix(mix(uStrokeColor, uFillColor, type),
+                      mix(aStrokeColor, aFillColor, type), uUseInstColor);
 
-    if (part > 5.5) {
-        // ---- 图标：算式与 tile.vert 相同（不含 fma，3.3 直接能算）----
-        bool tw = mod(aIconBits, 2.0) >= 1.0;
-        bool up = mod(floor(aIconBits / 2.0), 2.0) >= 1.0;
-        bool dn = floor(aIconBits / 4.0) >= 1.0;
-        bool on = (part < 6.5) ? tw : ((part < 7.5) ? up : dn);
-        if (on) {
-            float zo = (part < 6.5) ? kIconZBase
-                                    : (kIconZBase + (tw ? kIconZExtra : kIconZBase * 0.5));
-            pos = vec3(k0, k1, zo);
-            type = 1.0;
-            color = (part < 6.5) ? kTwirlColor : ((part < 7.5) ? kSSUpColor : kSSDownColor);
-        }
-    } else if (v < kTileSlots) {
+    {
         // ---- 砖：CPU 展开表 ----
         pos = vec3(slotPos(aShape, v), 0.0);
     }
 
     vColor = color;
-    vOpacity = uOpacity;
+    vIconLocal = pos.xy;   // 砖的局部原点就是砖心（形状以砖心为原点）
+    vIconBits  = aIconBits;
+    // stroke 层（z 更小=更近）压过 fill；同层同 z 的 part 由 GL_LESS 丢弃后画的那个。
+    pos.z -= (1.0 - type) * 2e-4;
+    // 图标与 fill **共面**（z=0）：不靠 z 偏移，靠第二趟 draw + GL_LEQUAL 压过 fill。
+    // 固定 z 偏移在"几百万砖同屏"时一定会穿透（可见窗口的 z 间距只有 1e-7 量级）。
+    if (aXform.x == 0.0 && aXform.y == 1.0 && aXform.z == 1.0) {
+        pos = vec3(pos.xy + aMove, pos.z);
+    } else {
+        vec2 q = pos.xy - aPivot;
+        q *= vec2(aXform.y, aXform.z);
+        float xc = cos(aXform.x), xs = sin(aXform.x);
+        q = vec2(q.x * xc - q.y * xs, q.x * xs + q.y * xc);
+        pos = vec3(q + aPivot + aMove, pos.z);
+    }
+    vOpacity = uOpacity * aXform.w;
     gl_Position = uVP * vec4(pos + aInstOffset, 1.0);
 }
 )";
@@ -325,6 +364,22 @@ void main() {
 
 // Highlight shader：与砖**共用**同一个 VS（几何只有一份实现），只有 FS 不同。
 // 砖有两支 VS（4.10 的 fma 版 / 3.3 的查表版），高亮跟着砖走，用同一支 —— 见 LevelScene 的选择。
+
+// Flash：全屏三角形 + uniform 颜色（见 assets/shaders/flash.*）
+constexpr const char* kFlashVertSrc = R"(#version 330 core
+// 全屏三角形（无 VBO）：gl_VertexID 0/1/2 → (-1,-1) (3,-1) (-1,3)
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2)) * 2.0 - 1.0;
+    gl_Position = vec4(p, 0.0, 1.0);
+}
+)";
+constexpr const char* kFlashFragSrc = R"(#version 330 core
+// Flash 叠层：直接输出 uniform 颜色 × alpha，混合由调用方设置。
+uniform vec3  uColor;
+uniform float uAlpha;
+out vec4 fragColor;
+void main() { fragColor = vec4(uColor, uAlpha); }
+)";
 constexpr const char* kHighlightVertSrc = kTileVertSrc;
 
 constexpr const char* kHighlightFragSrc = R"(#version 330 core

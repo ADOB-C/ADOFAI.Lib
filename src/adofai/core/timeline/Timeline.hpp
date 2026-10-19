@@ -28,7 +28,6 @@ public:
 
     void build(const LevelData& level, bool exportOnly = false);
     void setForceHitsoundType(const std::string& type) { m_forceHitsoundType = type; }
-    const std::string& forceHitsoundType() const { return m_forceHitsoundType; }
 
     const LevelData* level() const { return m_level; }
 
@@ -81,7 +80,6 @@ public:
     bool  trackVisCoarseMonotone() const { return m_visCoarseMonotone; }
     int64_t tileCount() const { return (int64_t)m_tileBPM.size(); }
     const std::vector<double>& coarseDisappearTimes() const { return m_coarseDA; }
-    const std::vector<double>& coarseAppearTimes() const { return m_coarseAA; }
     // 逐层 TrackVis 时间（未窗口化时直接读密集数组；窗口化时物化所在块）
     const BlockResult* windowFor(int64_t i) const;   // 单块缓存（物化 i 所在的块）
     // 起始时间：未窗口化时直读密集数组，窗口化时物化所在块（单块缓存）
@@ -111,6 +109,11 @@ public:
     float tileEndDist(size_t i) const {
         return (i + 1 == m_distCount) ? m_lastEndDist : 1.0f;
     }
+
+    // 第 0 层的起始时间（= 倒计时起点，通常为负）。**别在逐采样路径里调
+    // `startTimeAt(0)`**：那是单块缓存，会把当前块的缓存撕回 block 0（The Moon 实测
+    // 每次多两次 4096 层重算 → 拖尾采样 128µs/点、1 秒/帧）。这里存一个标量。
+    double firstStartTime() const { return m_firstStartTime; }
 
     float preRoll() const { return m_preRoll; }
     float audioStartOffset() const { return m_audioStartOffset; }
@@ -167,6 +170,7 @@ private:
     float  m_lastStartDist = 1.0f;   // 只有最后一层用得上（其余恒 1.0f）
     float  m_lastEndDist   = 1.0f;
 
+    double m_firstStartTime = 0.0;
     float m_preRoll = 0.0f;
     float m_audioStartOffset = 0.0f;
 

@@ -229,7 +229,9 @@ int main(int argc, char** argv)
         adofai::HitsoundManager hs;
         hs.init(hitsDir);                  // 直接给音色目录（内含 Kick.wav …）
         hs.setEnabled(true);
-        hs.setVolume(100.0f);
+        // 音量不再由这里设：上游 2026-10-18 把「全局音量」去掉了，改由谱面的
+        // settings.hitsoundVolume / 每砖 SetHitsound 覆盖决定（setVolume/setHitsoundType/
+        // reset 三个接口都删了）。示例因此什么也不用做，混出来的就是谱面自己的音量。
         const auto groups = timeline.getHitsoundTimestampGroups();
         if (hs.preSynthesize(groups, (float)total)) {
             if (hs.isSynthesized() && hs.totalFrames() > 0) {

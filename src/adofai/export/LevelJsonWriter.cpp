@@ -77,6 +77,22 @@ bool putSettings(Writer& w, const LevelData::Settings& s, std::string& err)
     w.String(s.trackAnimation.c_str(), (rapidjson::SizeType)s.trackAnimation.size());
     w.Key("beatsBehind");  if (!putF(w, s.beatsBehind, err, "settings.beatsBehind")) return false;
     w.Key("beatsAhead");   if (!putF(w, s.beatsAhead, err, "settings.beatsAhead")) return false;
+    // 2026-10-18 上游加的 8 个字段（砖色模型 + 音高 + 相机的老语义开关）。与 songFilename 同一个
+    // 教训：漏写任何一个，导出就是"看起来正常"的静默降级，所以 modelDigest 也必须逐个覆盖。
+    auto putS = [&](const char* key, const std::string& v) {
+        w.Key(key); w.String(v.c_str(), (rapidjson::SizeType)v.size());
+    };
+    putS("trackColorType", s.trackColorType);
+    putS("trackColorPulse", s.trackColorPulse);
+    w.Key("trackColorAnimDuration");
+    if (!putF(w, s.trackColorAnimDuration, err, "settings.trackColorAnimDuration")) return false;
+    w.Key("trackPulseLength");
+    if (!putF(w, s.trackPulseLength, err, "settings.trackPulseLength")) return false;
+    putS("trackStyle", s.trackStyle);
+    w.Key("trackGlowIntensity");
+    if (!putF(w, s.trackGlowIntensity, err, "settings.trackGlowIntensity")) return false;
+    w.Key("pitch");        if (!putF(w, s.pitch, err, "settings.pitch")) return false;
+    w.Key("legacyCamRelativeTo"); w.Bool(s.legacyCamRelativeTo);
     w.EndObject();
     return true;
 }
@@ -214,6 +230,14 @@ void digestSettings(Digest& d, const LevelData::Settings& s)
     d.str(s.trackAnimation);
     d.f32(s.beatsBehind);
     d.f32(s.beatsAhead);
+    d.str(s.trackColorType);
+    d.str(s.trackColorPulse);
+    d.f32(s.trackColorAnimDuration);
+    d.f32(s.trackPulseLength);
+    d.str(s.trackStyle);
+    d.f32(s.trackGlowIntensity);
+    d.f32(s.pitch);
+    d.u8(s.legacyCamRelativeTo ? 1 : 0);
 }
 
 }  // namespace
@@ -261,6 +285,42 @@ bool writeJson(const LevelData& level, std::string& out, std::string& err)
         return true;
     }
     if (err.empty()) err = "JSON 写出未完成（Writer::IsComplete() 为假）";
+    return false;
+}
+
+bool canExport(const LevelData& level, std::string* why)
+{
+    // `.adofai` 的 actions 里只有 7 种经典事件；2026-10-18 上游把相机/砖色/闪屏/轨道动画/重复
+    // 这五类搬进了**富结构**（`cameraEvents` 等），ScaleRadius 更是只被烘进 tile 位置、
+    // 原始事件都没留。这些**没有** JSON 表示 —— 写 `.adofai` 就会静默丢掉它们。
+    struct Item { const char* name; size_t n; };
+    const Item items[] = {
+        {"MoveCamera", level.cameraEvents.size()},
+        {"RepeatEvents", level.repeatEvents.size()},
+        {"ColorTrack/RecolorTrack", level.colorEvents.size()},
+        {"Flash", level.flashEvents.size()},
+        {"MoveTrack", level.moveTrackEvents.size()},
+    };
+    std::string got;
+    size_t total = 0;
+    for (const Item& it : items) {
+        if (it.n == 0) continue;
+        if (!got.empty()) got += "、";
+        got += std::string(it.name) + " ×" + std::to_string(it.n);
+        total += it.n;
+    }
+    if (level.hasScaleRadiusEvents()) {
+        if (!got.empty()) got += "、";
+        got += "ScaleRadius（只烘进砖位，原始事件上游没留）";
+        ++total;
+    }
+    if (total == 0) return true;
+    if (why) {
+        *why = "这份谱含 " + got +
+               " —— 它们没有 `.adofai` 的 JSON 表示，写明文会静默丢掉这些事件。"
+               "用 `.adocao`（第 9~13 段专门存它们，ScaleRadius 除外），"
+               "或者先在上游把这五类事件的 JSON 写方做出来";
+    }
     return false;
 }
 

@@ -10,6 +10,8 @@ add_library(adofai_core STATIC
     level/ByteSource.cpp
     level/JsonCleaner.cpp
     level/LevelData.cpp
+    # 砖色模型（trackStyle 的 fill/stroke 派生 + 颜色类型 + pulse）—— 纯计算，不碰 GL
+    level/TileColor.cpp
     # 每砖结构窗口化：LevelData::tilePositionAt / tileDirectionAt 的按块物化 provider
     level/FloorWindow.cpp
     level/LevelPath.cpp
@@ -22,7 +24,14 @@ add_library(adofai_core STATIC
     util/Progress.cpp
     # Scheduler 取代了原来的 ThreadPool（上游把线程池改成"可注入调度器"，并加了
     # header-only 的 util/Profile.hpp）。ThreadPool.{hpp,cpp} 已在上游删除。
-    util/Scheduler.cpp)
+    util/Scheduler.cpp
+    # Easing 从 render/ 挪到了 core/util/（2026-10-18）：它是纯数学，相机时间线与砖色都
+    # 要用它，而 core 不能依赖 render。render/Easing.hpp 已在上游删除。
+    util/Easing.cpp
+    # 相机时间线（事件 → 关键帧 → 采样）与导演。**在 core 而不是 render**：它们只需要
+    # LevelData/Timeline，不碰 GL —— 渲染器只负责把算好的相机矩阵用掉。
+    camera/CameraTimeline.cpp
+    camera/CameraDirector.cpp)
 
 # 公共依赖：glm 的 dvec2 出现在 PlaybackClock.hpp / PositionSolver.hpp。
 # 它跟着本库一起装，消费者由 cmake/ADOFAI.LibConfig.cmake.in 的 find_dependency(glm) 接上。

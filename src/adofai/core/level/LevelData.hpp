@@ -12,12 +12,15 @@
 #include <rapidjson/document.h>
 
 #include "core/level/AngleStore.hpp"   // ③ 切片 4：angleData 的紧凑存储
+#include "core/level/TileColor.hpp"   // baseColorConfig() / TileColorConfig
 
 // Parsed .adofai level file
 // 驻留实现：互斥量与 thread-local 缓存都在 .cpp 文件作用域，按驻留表地址做缓存键；
 // LevelData 里因此没有 mutex / thread_local 数据成员（保持可拷贝，MSVC 也接受）。
 
 namespace adofai {
+
+class Timeline;
 
 uint16_t internActionStrIn(std::vector<std::string>& table, const std::string& v);
 
@@ -43,6 +46,13 @@ struct LevelData {
         float  hitsoundVolume = 100.0f;
         std::string trackColor = "debb7b";
         std::string secondaryTrackColor = "ffffff";
+        // 砖色/样式（Re_ADOJAS TileColorManager 的 settings 默认段）：
+        std::string trackColorType = "Single";     // Single/Stripes/Glow/Blink/Switch/Rainbow/Volume
+        std::string trackColorPulse = "None";      // None/Forward/Backward
+        float  trackColorAnimDuration = 2.0f;      // 秒
+        float  trackPulseLength = 10.0f;           // 层
+        std::string trackStyle = "Standard";       // Standard/Neon/NeonLight/Basic/Gems/Minimal
+        float  trackGlowIntensity = 100.0f;        // 只透传（辉光），不参与 fill/stroke
         std::string backgroundColor = "000000";
         bool   stickToFloors = true;
         std::string planetEase = "Linear";
@@ -50,22 +60,233 @@ struct LevelData {
         std::string trackAnimation = "None";
         float  beatsBehind = 4.0f;
         float  beatsAhead  = 3.0f;
-        // ... more fields as needed
+        // 音高（%）：运镜的事件时长与跟随速度都按 1/(pitch/100) 缩放（docs/camera.md §5.5）。
+        // 缺省 100 = 不变调；Re_ADOJAS 用 `Math.max(0.1, pitch/100)` 兜底。
+        float  pitch = 100.0f;
+        // 老语义：事件没写 relativeTo 时，position 变成"相对当前相机"的**增量**（docs/camera.md §4.7）。
+        bool   legacyCamRelativeTo = false;
     };
+
+    // settings 里的默认砖色 → 颜色模型配置（加载后不随事件变的那一段）。
+    TileColorConfig baseColorConfig() const;
 
     // 32 B → 24 B：`index` 从来只被写入（`= i`），没有任何读者 —— 层号就是它在 `tiles` 里的位置。
     struct Tile {
-        float angle = 180.0f;
+        // 原 `float angle` 无人读（渲染/时间线只用 direction + position），删掉后
+        // 结构仍是 24 B（20 B + 对齐填充），但少了一个会误导人的"有角度值"字段。
         float direction = 0.0f;
         std::array<double, 2> position = {0.0, 0.0};
     };
     // 内存预算护栏：1e9 层时每 8 B 就是 8 GB。加字段前先问"这个值能不能推导/能不能窗口化"。
     static_assert(sizeof(Tile) == 24, "Tile 膨胀了：先确认这 8 B/层（1e9 层 = 8 GB）是必要的");
 
+    // ── 相机：MoveCamera / RepeatEvents ────────────────────────────────────
+    // 运镜事件**与砖数无关**（一个事件一条，最多几百条），所以存富结构、单独一个 vector，
+    // 不塞进 16 B 的 FastAction（那会把 9M action 的 16 B 变成 24 B = 白扔 72 MB）。
+    // 字段语义、缺省值、单位见 docs/camera.md §4.1：
+    //   position = 砖（TILE_SIZE=1）｜rotation = 度｜zoom = 百分比｜duration = 拍｜angleOffset = 度。
+    // "字段没写" 与 "写了 0" 必须能区分 —— 所以有 hasX/hasY/hasRotation/hasZoom 位。
+    enum CamMove : uint8_t {
+        CamPlayer = 0,
+        CamTile,
+        CamGlobal,
+        CamLastPosition,
+        CamLastPositionNoRotation,
+        CamUnknown = 0xFE,   // 写了 relativeTo 但不是合法值（→ 沿用上一次模式）
+        CamAbsent  = 0xFF,   // 没写 relativeTo
+    };
+    // 位序是**跨实现契约**：tests/camera_gold.inc 里写的就是这些数值（static_assert 钉住）。
+    enum CamFlags : uint8_t {
+        // `position` **数组存在**（哪怕两个分量都是 null）。它和 hasX/hasY 是两件事：
+        // Re_ADOJAS 用 `Array.isArray(event.position)` 判 positionUsed，`[null,null]` 会走
+        // dedup/NaN 归零路径，而"没写 position"不会 —— docs/camera.md §4.3/§4.4。
+        kCamHasPosition = 1 << 0,
+        kCamHasX        = 1 << 1,
+        kCamHasY        = 1 << 2,
+        kCamHasRotation = 1 << 3,
+        kCamHasZoom     = 1 << 4,
+        kCamInactive    = 1 << 5,   // active:false / "Disabled" / disabled.active
+        kCamEditorOnly  = 1 << 6,
+        kCamEaseWritten = 1 << 7,
+    };
+    enum CamDisabled : uint8_t {
+        kCamDisPosition = 1 << 0,
+        kCamDisRotation = 1 << 1,
+        kCamDisZoom     = 1 << 2,
+        kCamDisRel      = 1 << 3,
+    };
+    struct CameraEvent {
+        int32_t  floor = 0;
+        uint32_t id = 0xFFFFFFFFu;   // 缺失 = 排最后（Re_ADOJAS 的 `event.id ?? Infinity`）
+        uint32_t order = 0;          // 文件顺序（同 time 同 id 时的最终 tie-break；finishLoad 里赋值）
+        float    angleOffset = 0.0f;
+        float    duration = 0.0f;
+        float    x = 0.0f, y = 0.0f;
+        float    rotation = 0.0f;
+        float    zoom = 100.0f;
+        uint8_t  ease = 0;           // Ease id（core/util/Easing.hpp）；未写/未知 = Linear
+        uint8_t  relativeTo = CamAbsent;
+        uint8_t  flags = 0;          // CamFlags
+        uint8_t  disabled = 0;       // CamDisabled（disabled 字段级过滤）
+        std::string tag;             // eventTag（RepeatEvents 按空格拆 tag 匹配）
+    };
+    struct RepeatEvent {
+        int32_t  floor = 0;
+        float    repetitions = 0.0f; // Beat: 重复次数；Floor: floorCount
+        float    interval = 1.0f;    // 拍（Beat 模式；Re_ADOJAS 用 `interval > 0` 判 Beat）
+        float    gapLength = 1.0f;   // 砖（Floor 模式）
+        uint8_t  flags = 0;          // bit0 isBeat(repeatType != Floor) / bit1 executeOnCurrentFloor
+        std::string tag;             // 原样（空格分隔的多个 tag，展开时拆）
+    };
+
+    // ── 砖色：ColorTrack ────────────────────────────────────────────────
+    // 与相机事件同理：一条事件一个富结构（最多几百条），不塞进 FastAction。
+    // 缺省值按 Re_ADOJAS `createShiftType(event)`：事件没写的字段用**硬编码**默认值
+    // （不是 settings —— settings 只提供 level 的默认段）。唯一例外是 trackGlowIntensity：
+    // 没写时回落到 settings.trackGlowIntensity，由 kColorHasGlow 标记。
+    enum ColorFlags : uint8_t {
+        kColorJustThisTile = 1 << 0,
+        kColorInactive     = 1 << 1,   // active:false / "Disabled"
+        kColorEditorOnly   = 1 << 2,
+        kColorHasGlow      = 1 << 3,   // 写了 trackGlowIntensity（否则用 settings）
+        kColorIsRecolor    = 1 << 4,   // RecolorTrack（范围 + 触发时间；ColorTrack 是"从此往后"）
+    };
+    struct ColorEvent {
+        TileColorConfig cfg;           // 已把事件缺省值填好（startFloor = floor, startTime = 0）
+        int32_t  floor = 0;
+        uint32_t order = 0;            // 文件顺序（同 floor 时后者覆盖）
+        float    duration = 0.0f;      // TweenColor 时长（秒；0 = 瞬切）
+        uint8_t  ease = 0;
+        uint8_t  flags = 0;            // ColorFlags
+        // ── RecolorTrack（kColorIsRecolor）────────────────────────────
+        // startTile/endTile 原样保存：`rel = -1` = 绝对层号；0 ThisTile / 1 Start / 2 End。
+        // 解析成绝对范围在 `buildRecolorIndex()`（那时才知道总层数）。
+        int32_t  startOff = 0, endOff = 0;
+        int8_t   startRel = -1, endRel = -1;
+        int32_t  gapLength = 0;
+        float    angleOffset = 0.0f;   // 触发时间 = startTime(floor) + angleOffset/180 * 一拍
+    };
+
+    // ── MoveTrack（轨道动画：位置/旋转/缩放/不透明度）──────────────────
+    // 语义对齐 Re_ADOJAS `buildTileMoveTrack`：每条事件对**指定属性**做一次补间，
+    // positionOffset = 相对基础位置（target = base + offset），rotationOffset = **绝对角度**
+    // （覆盖砖自身旋转），scale/opacity = 绝对值（%/100）；duration 单位是**拍**；
+    // 同属性的旧补间 Kill(complete)（跳到旧目标）再补；末值保持。
+    struct MoveTrackEvent {
+        int32_t floor = 0;
+        float   angleOffset = 0.0f;
+        std::string tag;            // eventTag（空格分隔；RepeatEvents 展开用）
+        int32_t startOff = 0, endOff = 0;
+        int8_t  startRel = -1, endRel = -1;
+        int32_t gap = 0;
+        int32_t lo = 0, hi = 0;        // resolved
+        double  trigger = 0.0;
+        float   durBeats = 0.0f;   // 原始（拍）
+        double  durSec = 0.0;
+        uint8_t ease = 0;
+        uint32_t order = 0;
+        uint8_t flags = 0;             // bit0 offX / bit1 offY / bit2 rot / bit3 scale / bit4 opacity
+        float   offX = 0.0f, offY = 0.0f;
+        float   rotDeg = 0.0f;
+        float   scaleX = 1.0f, scaleY = 1.0f;
+        float   opacity = 1.0f;
+    };
+    enum MoveFlags : uint8_t {
+        kMoveOffX = 1 << 0, kMoveOffY = 1 << 1, kMoveRot = 1 << 2,
+        kMoveScale = 1 << 3, kMoveOpacity = 1 << 4,
+        kMoveInactive = 1 << 5, kMoveEditorOnly = 1 << 6,
+    };
+    struct MoveTransform {
+        bool any = false;
+        float rotDelta = 0.0f;     // 弧度（值 - 砖的基础朝向）
+        float scaleX = 1.0f, scaleY = 1.0f;
+        float alpha = 1.0f;
+        float moveX = 0.0f, moveY = 0.0f;   // 相对基础位置
+    };
+    void buildMoveTrackIndex(const Timeline& timeline);
+    // ScaleRadius（轨道半径缩放）：逐砖继承的 radiusScale，按入口方向累进成位置偏移，
+    // 直接烘进 tiles[i].position（必须在 finishLoad 里、位置算完之后）。
+    void applyRadiusScaleOffsets();
+    bool hasScaleRadiusEvents() const { return m_hasScaleRadius; }
+    MoveTransform moveTransformAt(int64_t floor, double timeSec) const;
+    float movePad() const { return m_movePad; }
+
+    // ── Flash（全屏闪屏）──────────────────────────────────────────────
+    // 语义见 Re_ADOJAS `FlashEffect`：每条事件把某个 plane 从 start 补到 end；
+    // duration<=0 或补完后**保持**终值，直到下一次 Flash/Kill。
+    struct FlashEvent {
+        int32_t floor = 0;
+        float duration = 0.0f;      // 原始（拍；buildFlashIndex 换算成 durSec）
+        double durSec = 0.0;        // 秒 = duration × 该层一拍 / pitch
+        float angleOffset = 0.0f;   // 触发偏移（度）→ trigger = startTime(floor) + angleOffset/180*拍
+        float startOpacity = 1.0f;  // 0..1（事件里的 0..100 已归一）
+        float endOpacity = 1.0f;
+        uint8_t startColor[3] = {255, 255, 255};
+        uint8_t endColor[3] = {255, 255, 255};
+        uint8_t plane = 0;          // 0 Foreground / 1 Background
+        uint8_t style = 0;          // 0 Flash / 1 Kill / 2 StayBlack
+        uint8_t ease = 0;
+        double trigger = 0.0;       // buildFlashIndex 填
+    };
+    struct FlashState {
+        bool active = false;
+        uint8_t color[3] = {0, 0, 0};
+        float alpha = 0.0f;
+    };
+    void buildFlashIndex(const Timeline& timeline);
+    // plane: 0 FG / 1 BG；t = 关卡时间（秒）。无事件 → inactive。
+    FlashState flashStateAt(uint8_t plane, double timeSec) const;
+
+    // ── RecolorTrack 的运行时索引（buildRecolorIndex() 之后有效）──────────
+    // 每 4096 层一个块，块内是该块"可能命中"的事件下标（按 trigger 排序）。
+    // 查询 = 块表里取最后一条 trigger<=t 且范围覆盖该层的事件 —— O(块内事件数)。
+    struct RecolorTrigger {
+        int32_t lo = 0, hi = 0, gap = 0;
+        double  trigger = 0.0;    // 秒
+        double  beat = 0.0;       // 该事件 floor 的一拍（秒）
+        float   duration = 0.0f;  // 拍
+        uint8_t ease = 0;
+        uint32_t order = 0;
+        TileColorConfig cfg;
+    };
+    void buildRecolorIndex(const Timeline& timeline);
+    // 逐砖视觉是否随关卡时间变化（颜色事件/MoveTrack；Flash 不算，它不碰砖实例）。
+    bool animatesTiles() const { return !colorEvents.empty() || !moveTrackEvents.empty(); }
+
     Settings settings;
     std::vector<double> angleData;
     std::string        pathData;       // raw pathData string (alternative to angleData)
     std::vector<Tile>  tiles;
+    std::vector<CameraEvent> cameraEvents;   // MoveCamera（未展开 RepeatEvents）
+    std::vector<RepeatEvent> repeatEvents;   // RepeatEvents（只服务运镜展开；其他事件暂不消费）
+    std::vector<ColorEvent> colorEvents;     // ColorTrack / RecolorTrack（未展开；按 floor 查）
+    std::vector<FlashEvent> flashEvents;     // Flash（buildFlashIndex 后按 trigger 排序）
+    std::vector<MoveTrackEvent> moveTrackEvents;   // MoveTrack（buildMoveTrackIndex 后有效）
+
+    // floor 处生效的颜色事件：
+    //   * f 正好是某条 `justThisTile` 事件的层 → 该层**最后一条** justThisTile（覆盖持久段）；
+    //   * 否则 floor <= f 的最后一条持久事件；
+    //   * 都没有 → nullptr（用 settings 默认段）。
+    // inactive / editorOnly 的一律跳过（Re_ADOJAS `isEventActive`）。
+    // 注意：这是**线性**查找，给测试/一次性查询用；渲染侧应先建段表（下一步）。
+    const ColorEvent* colorEventAt(int64_t floor) const;
+
+    // floor/t 时刻的最终 fill/stroke（含 Volume 幅度）。
+    // `timeline` 非空时按 TweenColor 语义处理 `duration`（拍 × 该层 BPM → 秒）：
+    // 事件在 `startTimeAt(floor)` 被"跨过"时开始渐变，`start+dur` 后到位；`t < start` 显示上一段目标色。
+    // nullptr = 不插值（纯静态色，测试/一次性查询用）。
+    TileColors tileColorsAt(int64_t floor, double timeSec, float amplitude = 0.0f,
+                            const Timeline* timeline = nullptr) const;
+
+    // 基础色（settings + ColorTrack；不含 RecolorTrack）—— tileColorsAt 的第一步。
+    TileColors baseColorsAt(int64_t floor, double timeSec, float amplitude = 0.0f,
+                            const Timeline* timeline = nullptr) const;
+
+    // 某层处生效的**持久段**（忽略 justThisTile / inactive / editorOnly）；没有 → nullptr。
+    const ColorEvent* persistentColorAtOrBefore(int64_t floor) const;
+    // 严格早于 floor 的最后一条持久段（TweenColor 的 "from" 色）。
+    const ColorEvent* persistentColorBefore(int64_t floor) const;
+
     // Lightweight action (avoids nlohmann DOM allocation for millions of actions)
     // 事件里的字符串（hitsound 名、trackDisappear 动画名）绝大多数是重复的少数几个值，
     // 而又只有这两类事件用到。以前每个 action 内联一个 std::string（32 B）：1.18 GB / 912 万
@@ -74,7 +295,9 @@ struct LevelData {
     struct FastAction {
         int floor = 0;
         uint16_t strId = 0;                 // 0 = 空串；索引进 actionStrTable
-        enum Type : uint8_t { Twirl, SetSpeed, PositionTrack, SetHitsound, Bookmark, Pause, AnimateTrack, Other } type = Other;
+        // MoveCamera / RepeatEvents **不留在 actions 里**（keep=false）：它们走 cameraEvents /
+        // repeatEvents 两个富结构。这两个枚举值只用于"解析时认出它"。
+        enum Type : uint8_t { Twirl, SetSpeed, PositionTrack, SetHitsound, Bookmark, Pause, AnimateTrack, MoveCamera, RepeatEvents, ColorTrack, RecolorTrack, Flash, MoveTrack, Other, ScaleRadius } type = Other;
         bool flag = false;
         float val1 = 0, val2 = 0;
     };
@@ -95,6 +318,18 @@ struct LevelData {
     // ⚠️ **不能**只写 `tiles.size()`：丢过密集数组之后它是 0，而全运行期（mesh 装配、capture、
     // jump、最近砖搜索）都拿它当"谱面砖数"。窗口化时由 provider 记着那个数。
     int64_t tileCount() const;
+
+    // RecolorTrack 的运行时索引（buildRecolorIndex 填）
+    std::vector<RecolorTrigger> m_recolorTriggers;
+    std::vector<std::vector<uint32_t>> m_recolorBlocks;
+    bool m_recolorReady = false;
+    // MoveTrack 运行时索引
+    std::vector<MoveTrackEvent> m_moveIndex;
+    std::vector<std::vector<uint32_t>> m_moveBlocks;
+    bool m_moveReady = false;
+    bool m_hasScaleRadius = false;
+    float m_movePad = 0.0f;
+    float m_moveMaxScale = 1.0f;
     // 可选 `wc`：并行剔除时传**本线程自己的克隆**（见 `FloorWindowCache::clone()`）；
     // 不传 = 用共享缓存（单线程路径，语义与以前逐位相同）。
     std::array<double, 2> tilePositionAt(int64_t i, FloorWindowCache* wc = nullptr) const;

@@ -66,8 +66,10 @@ struct H {
 struct Digest {
     uint64_t angle = 0, actions = 0, tiles = 0, settings = 0, bpm = 0, twirl = 0, setspeed = 0;
     uint64_t bookmarks = 0, hitsounds = 0, hsVolumes = 0, posOffsets = 0, atStates = 0, path = 0;
+    uint64_t cameras = 0, repeats = 0, colors = 0, flashes = 0, moves = 0;
     size_t angleCount = 0, actionCount = 0, tileCount = 0, bookmarkCount = 0, hitsoundCount = 0;
     size_t hsVolumeCount = 0, posOffsetCount = 0, atStateCount = 0, pathLen = 0;
+    size_t cameraCount = 0, repeatCount = 0, colorCount = 0, flashCount = 0, moveCount = 0;
     bool ok = false;
 };
 
@@ -97,7 +99,7 @@ Digest digest(const LevelData& lv, bool ok) {
     }
     H t;  for (auto& x : lv.tiles) {
         // Tile::index 已删（层号 = tiles 里的位置，从来没有读者）—— 摘要里也不再哈希它
-        t.f32(x.angle); t.f32(x.direction); t.bytes(&x.position, sizeof(x.position));
+        t.f32(x.direction); t.bytes(&x.position, sizeof(x.position));
     }
     H s;
     s.i32(lv.settings.version); s.f32(lv.settings.bpm); s.f32(lv.settings.offset);
@@ -108,6 +110,10 @@ Digest digest(const LevelData& lv, bool ok) {
     s.bytes(&lv.settings.stickToFloors, 1); s.str(lv.settings.planetEase);
     s.str(lv.settings.trackDisappearAnimation); s.str(lv.settings.trackAnimation);
     s.f32(lv.settings.beatsBehind); s.f32(lv.settings.beatsAhead);
+    s.f32(lv.settings.pitch); s.bytes(&lv.settings.legacyCamRelativeTo, 1);
+    s.str(lv.settings.trackColorType); s.str(lv.settings.trackColorPulse);
+    s.f32(lv.settings.trackColorAnimDuration); s.f32(lv.settings.trackPulseLength);
+    s.str(lv.settings.trackStyle); s.f32(lv.settings.trackGlowIntensity);
     H bp; for (float v : lv.tileBPMs) bp.f32(v);
     H tw; for (size_t i = 0; i < lv.tileHasTwirl.size(); i++)    { unsigned char b = lv.tileHasTwirl[i];    tw.bytes(&b, 1); }
     H ss; for (size_t i = 0; i < lv.tileHasSetSpeed.size(); i++) { unsigned char b = lv.tileHasSetSpeed[i]; ss.bytes(&b, 1); }
@@ -130,6 +136,44 @@ Digest digest(const LevelData& lv, bool ok) {
         }
     }
     H p; p.str(lv.pathData);
+    // 相机/重复事件：富结构逐字段（含 order —— 它必须在所有路径上都是文件顺序）
+    H cv; for (auto& e : lv.cameraEvents) {
+        cv.i32(e.floor); cv.u64(e.id); cv.u64(e.order);
+        cv.f32(e.angleOffset); cv.f32(e.duration); cv.f32(e.x); cv.f32(e.y);
+        cv.f32(e.rotation); cv.f32(e.zoom);
+        cv.bytes(&e.ease, 1); cv.bytes(&e.relativeTo, 1);
+        cv.bytes(&e.flags, 1); cv.bytes(&e.disabled, 1); cv.str(e.tag);
+    }
+    H cl; for (auto& e : lv.colorEvents) {
+        cl.i32(e.floor); cl.u64(e.order); cl.f32(e.duration);
+        cl.bytes(&e.ease, 1); cl.bytes(&e.flags, 1);
+        cl.str(e.cfg.colorType); cl.str(e.cfg.color); cl.str(e.cfg.secondary);
+        cl.str(e.cfg.pulse); cl.str(e.cfg.style);
+        cl.f32(e.cfg.animDuration); cl.f32(e.cfg.pulseLength); cl.f32(e.cfg.glowIntensity);
+        cl.i32(e.cfg.startFloor); cl.bytes(&e.cfg.startTime, sizeof(double));
+        cl.i32(e.startOff); cl.i32(e.endOff);
+        cl.bytes(&e.startRel, 1); cl.bytes(&e.endRel, 1);
+        cl.i32(e.gapLength); cl.f32(e.angleOffset);
+    }
+    H fl; for (auto& e : lv.flashEvents) {
+        fl.i32(e.floor); fl.f32(e.duration); fl.f32(e.angleOffset);
+        fl.bytes(&e.startOpacity, 4); fl.bytes(&e.endOpacity, 4);
+        fl.bytes(e.startColor, 3); fl.bytes(e.endColor, 3);
+        fl.bytes(&e.plane, 1); fl.bytes(&e.style, 1); fl.bytes(&e.ease, 1);
+    }
+    H mv; for (auto& e : lv.moveTrackEvents) {
+        mv.i32(e.floor); mv.f32(e.angleOffset); mv.f32(e.durBeats); mv.i32(e.gap);
+        mv.i32(e.startOff); mv.i32(e.endOff);
+        mv.bytes(&e.startRel, 1); mv.bytes(&e.endRel, 1);
+        mv.bytes(&e.ease, 1); mv.bytes(&e.flags, 1);
+        mv.f32(e.offX); mv.f32(e.offY); mv.f32(e.rotDeg);
+        mv.f32(e.scaleX); mv.f32(e.scaleY); mv.f32(e.opacity);
+        mv.str(e.tag);
+    }
+    H rv; for (auto& r : lv.repeatEvents) {
+        rv.i32(r.floor); rv.f32(r.repetitions); rv.f32(r.interval); rv.f32(r.gapLength);
+        rv.bytes(&r.flags, 1); rv.str(r.tag);
+    }
 
     d.angle = a();    d.angleCount = lv.angleData.size();
     d.actions = ac(); d.actionCount = lv.actions.size();
@@ -141,6 +185,11 @@ Digest digest(const LevelData& lv, bool ok) {
     d.posOffsets = po(); d.posOffsetCount = lv.tilePositionOffsets.size();
     d.atStates = at();  d.atStateCount = lv.atStates.size();
     d.path = p();       d.pathLen = lv.pathData.size();
+    d.cameras = cv();   d.cameraCount = lv.cameraEvents.size();
+    d.repeats = rv();   d.repeatCount = lv.repeatEvents.size();
+    d.colors = cl();    d.colorCount = lv.colorEvents.size();
+    d.flashes = fl();   d.flashCount = lv.flashEvents.size();
+    d.moves = mv();     d.moveCount = lv.moveTrackEvents.size();
     return d;
 }
 
@@ -160,6 +209,11 @@ const Section kSections[] = {
     {"tilePositionOffsets", &Digest::posOffsets, &Digest::posOffsetCount},
     {"atStates",            &Digest::atStates,   &Digest::atStateCount},
     {"pathData",            &Digest::path,       &Digest::pathLen},
+    {"cameraEvents",        &Digest::cameras,    &Digest::cameraCount},
+    {"repeatEvents",        &Digest::repeats,    &Digest::repeatCount},
+    {"colorEvents",         &Digest::colors,     &Digest::colorCount},
+    {"flashEvents",         &Digest::flashes,    &Digest::flashCount},
+    {"moveTrackEvents",     &Digest::moves,      &Digest::moveCount},
 };
 
 // 返回不同的节名（空 = 完全一致）
