@@ -62,8 +62,8 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 4. **本地只跑两格**（默认 + render=ON）。其余 6 格**交给 CI** —— CI 那 10 格把它们全覆盖了，
    本地再跑一遍是重复劳动（8 格全量约 5–6 分钟，两格约 1.5 分钟）：
    ```bash
-   ctest --test-dir build            # 默认：35/35
-   ctest --test-dir build-render     # render=ON：40/40（含三层几何 + shader 一致性 + 导出）
+   ctest --test-dir build            # 默认：36/36
+   ctest --test-dir build-render     # render=ON：41/41（含三层几何 + shader 一致性 + 导出）
    ```
    `build-render` 由 `bash build/matrix.sh render` 建（也接受多个配置名，产物在 `build-*/`，
    已 gitignore）。**只有改了 install/export/选项矩阵/CI 本身时**才值得本地多跑几格 ——
@@ -81,11 +81,11 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `868ed24`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `5524ee6`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
-- 测试：render=OFF **35/35**、render=ON **40/40**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
+- 测试：render=OFF **36/36**、render=ON **41/41**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
 - **GPU 逐位那一层在 CI 上跑不了**：Ubuntu/macOS runner 都没有 GL 上下文，`geom_probe` 会
   打印 `SKIP` 退 0。workflow 里有一步专门**报告**它跑没跑 —— 别把"绿"当成"GPU 验过了"。
 - 还没做：**像素门槛**（`capture-gate.sh` 的 50 状态逐字节）没搬 —— 它要跑本体 app 抓帧，

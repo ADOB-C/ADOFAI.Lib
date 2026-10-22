@@ -5,9 +5,18 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=868ed24
-ADOCAO_COMMIT_FULL=868ed24d3d0d4ebbbb5ab297db0312d08bb23fec
+ADOCAO_COMMIT=5524ee6
+ADOCAO_COMMIT_FULL=5524ee68336e616573f48e991d110029c25a7909
 ADOCAO_COMMIT_DATE=2026-10-21
+# 本次同步要点（3 个提交；210 个镜像文件逐字节一致）：
+#
+#  1. `LevelData::trackStyleRunEnd()`（样式段查询）：只在"块内没有 RecolorTrack 触发"的区间里
+#     把同一样式合成一段。配 `tests/style_run_test.cpp`（区间不变量 + 负面对照）。
+#  2. `render/TileMesh` 的 `deriveRange` 改成按 run 复用 trackStyle，不再逐砖查 Timeline。
+#     这两条都是纯性能/纯区间不变量，不动模型字段，所以**导出模块无需改动**。
+#
+# 上一次同步：868ed24（core 引入 SIMD 结构扫描 JsonScan、逐砖关键帧、时间基准）。
+
 # 本次同步要点（30 个提交，22 个镜像文件改动；209 个镜像文件逐字节一致）：
 #
 #  1. **core 里第一次出现架构 intrinsic**：新增 core/level/JsonScan.hpp —— JSON 结构字节的

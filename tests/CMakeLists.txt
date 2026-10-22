@@ -249,6 +249,16 @@ add_executable(adofai_time_origin_test time_origin_test.cpp)
 target_link_libraries(adofai_time_origin_test PRIVATE ADOFAI::core)
 add_test(NAME time_origin COMMAND adofai_time_origin_test)
 
+# 样式段（trackStyleRunEnd）：块内无 RecolorTrack 触发时按"段"返回同一个样式 —— 纯区间不变量，
+# 带负面对照。它和 tile_color 是两条线：那边验"某一层此刻是什么色/什么 style"，
+# 这边验"从这层往后连续多少层还是同一个 style"（TileMesh 靠它按 run 复用，而不是逐砖查）。
+add_executable(adofai_style_run_test style_run_test.cpp)
+target_link_libraries(adofai_style_run_test PRIVATE ADOFAI::core ADOFAI::archive)
+add_test(NAME style_run
+    COMMAND adofai_style_run_test
+            "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f39_color_events.json"
+            "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_recolor_track.json")
+
 # Easing（从 render/ 搬到 core/util/）+ 砖色模型：都是纯函数，金标逐位比对。
 add_executable(adofai_easing_test easing_test.cpp)
 target_link_libraries(adofai_easing_test PRIVATE ADOFAI::core)

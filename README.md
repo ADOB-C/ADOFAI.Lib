@@ -48,7 +48,7 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 35/35
+ctest --test-dir build          # 默认 36/36
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
@@ -262,7 +262,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 35 条 / render=ON 40 条**（随模块开关增减）：
+**render=OFF 36 条 / render=ON 41 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|
@@ -276,6 +276,7 @@ ctest --test-dir build
 | `ilytx` | Re_ADOJAS 的 `.ilytx`（xz(tar(ilybin))）与参照谱逐位等价；紧凑模式的 f32 误差；三个坏样本必须干净失败 |
 | `angle_store` / `floor_window_cache` / `timeline_anchor` | 角度紧凑存储、每砖按块物化、Timeline 每 4096 层锚点 —— 都是"丢掉密集数组之后与全量逐位相同"，各带反面对照 |
 | `release_contract` | `releaseMemory()` 之后 `tileBPMs` / `tileHasTwirl` / `tileHasSetSpeed` 必须逐位不变 —— **图标位是绘制期现算的**，清掉它们图标会静默全消失（上游 app 真踩过）。不碰 GL，CI 上真跑 |
+| `style_run` | `trackStyleRunEnd` 的区间不变量（块内无 RecolorTrack 触发时按段返回同一个 style）+ 负面对照；TileMesh 靠它按 run 复用而不是逐砖查 |
 | `keyframes` / `tile_animation` / `time_origin` | 逐砖关键帧求值、逐砖时间轴、以及 `separateCountdownTime` 决定的**时间基准**（它错了整条时间线会整体平移）|
 | `level_reload` | 关卡对象的**所有权与幂等**：`LevelData` 不可拷贝（缓存所有权）、可安全移动、`loadFromBuffer` 两次 == 一次（actions 不许被追加）、`releaseAngleData()` 之后仍能建窗口缓存 |
 | `bit_span` / `cull_index` / `cull_cost` | 位图区间置值、粗块 AABB 索引与全扫逐元素对拍、三种剔除策略的候选数/漏砖数/耗时留痕 |
