@@ -157,7 +157,7 @@ ctest --test-dir build
 | 配置 | 关键参数 | 期望 |
 |---|---|---|
 | 默认 | — | ctest **36/36** |
-| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **19/19**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
+| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **22/22**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
 | 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | **36/36**（走 `find_package(LibLZMA/zstd)`）|
 | 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | **36/36**，core 里零 `mz_` 符号 |
 | 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | **32/32** |

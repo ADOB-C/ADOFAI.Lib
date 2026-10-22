@@ -253,7 +253,11 @@ add_test(NAME time_origin COMMAND adofai_time_origin_test)
 # 带负面对照。它和 tile_color 是两条线：那边验"某一层此刻是什么色/什么 style"，
 # 这边验"从这层往后连续多少层还是同一个 style"（TileMesh 靠它按 run 复用，而不是逐砖查）。
 add_executable(adofai_style_run_test style_run_test.cpp)
-target_link_libraries(adofai_style_run_test PRIVATE ADOFAI::core ADOFAI::archive)
+# **只链 core**：上游把它链成 core+archive，但这个测试读的是明文 `.json` 夹具，
+# 既不 include archive 的任何头、也不调 `archive::install()`。链 archive 会让
+# `ADOFAI_LIB_ARCHIVE=OFF` 那格**配置期**就报 "ADOFAI::archive not found"
+# —— 2026-10-22 CI 的 linux-no-archive 正是这么红的（本地没跑那格，教训）。
+target_link_libraries(adofai_style_run_test PRIVATE ADOFAI::core)
 add_test(NAME style_run
     COMMAND adofai_style_run_test
             "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f39_color_events.json"

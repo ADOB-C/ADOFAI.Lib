@@ -68,6 +68,10 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
    `build-render` 由 `bash build/matrix.sh render` 建（也接受多个配置名，产物在 `build-*/`，
    已 gitignore）。**只有改了 install/export/选项矩阵/CI 本身时**才值得本地多跑几格 ——
    那几类改动坏的恰好是"OFF 那侧"，而 OFF 侧的承诺最容易静默破。
+   **加了新用例、或者动了某个用例的 `target_link_libraries` 之后，至少本地跑一次
+   `bash build/matrix.sh noarch`**（约 30 秒）。它是**配置期**最容易红的一格：链了
+   `ADOFAI::archive` 的新用例会让 `ADOFAI_LIB_ARCHIVE=OFF` 直接 Configure 失败，
+   而本地默认格永远看不出来 —— 2026-10-22 就是这么让 CI 红的。
 5. 绝对路径自检（见上）；
 6. `git push`，然后把 **run 链接报出来就够了 —— 一律不要 `gh run watch`**。
    GitHub 的通知邮件就是"跑完了"的信号（仓库所有者会收到）；守着看是纯空等
