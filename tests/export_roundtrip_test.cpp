@@ -145,14 +145,12 @@ int main(int argc, char** argv)
         // `canExport` 的判据是**逐类枚举**的（C++ 没有反射），所以它自己也会漂：上游再加一类
         // 富事件、或者有人删掉其中一条检查，它就会"说能写"。这条断言把 canExport 与模型现状
         // 钉在一起 —— 至少已建模的这几类不能漏。
-        const bool hasRich = !a.cameraEvents.empty() || !a.repeatEvents.empty() ||
-                             !a.colorEvents.empty() || !a.flashEvents.empty() ||
-                             !a.moveTrackEvents.empty() || a.hasScaleRadiusEvents();
-        if (hasRich && representable)
-            fail(input, "canExport 说能写明文，但这份谱含富事件（相机/砖色/闪屏/轨道动画/重复/半径）"
-                        " —— 写出来会静默丢事件");
-        if (!hasRich && !representable)
-            fail(input, "canExport 拒绝了，但这份谱没有富事件：" + unsupported);
+        // 2026-10-22 起五类富事件都能写了；**只有 ScaleRadius 仍然拒**（上游解析时就把
+        // 原始事件丢了，只把结果烘进砖位）。所以这条对照的判据就是它。
+        if (a.hasScaleRadiusEvents() && representable)
+            fail(input, "canExport 说能写明文，但这份谱含 ScaleRadius —— 写出来会丢事件");
+        if (!a.hasScaleRadiusEvents() && !representable)
+            fail(input, "canExport 拒绝了，但这份谱没有 ScaleRadius：" + unsupported);
 
         for (exporter::Format f : formats) {
             const std::string label = input + " -> " + exporter::formatExtension(f);

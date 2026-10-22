@@ -350,7 +350,14 @@ if(ADOFAI_LIB_ENABLE_EXPORT)
                 "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f28_empty_arrays.json"
                 "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f29_minimal.json"
                 "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f38_hitsound_volume_dense.json"
-                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_negative_hitsound_volume.json")
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_negative_hitsound_volume.json"
+                # 五类富事件：现在都能写回 `.adofai` 了；f43 是 ScaleRadius —— 仍然必须**明确拒绝**
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f30_camera_events.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f39_color_events.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_recolor_track.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f41_flash.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f42_movetrack.json"
+                "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f43_scale_radius.json")
 
     # 独立验收：Python 的 json / lzma（以及 zstd CLI）说了算，还有一份**另写的**建模投影。
     # 输出目录与上面那条**刻意分开**：两条用例导出的文件名集合是重叠的（都是按夹具名派生），
@@ -375,7 +382,14 @@ if(ADOFAI_LIB_ENABLE_EXPORT)
                     "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f24_positiontrack_variants.json"
                     "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f25_setspeed_variants.json"
                     "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f38_hitsound_volume_dense.json"
-                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_negative_hitsound_volume.json")
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_negative_hitsound_volume.json"
+                    # 富事件那几条：Python 侧独立数一遍每类事件的条数（不依赖 C++ 的指纹）。
+                    # **不含 f43**（ScaleRadius 写不出来，那条由 export_roundtrip 断言"必须拒绝"）。
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f30_camera_events.json"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f39_color_events.json"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f40_recolor_track.json"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f41_flash.json"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/level_fixtures/f42_movetrack.json")
     endif()
 endif()
 

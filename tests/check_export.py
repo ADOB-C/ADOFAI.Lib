@@ -314,6 +314,31 @@ def main():
         else:
             print(f"note: {tag} 原件不是严格 JSON，跳过独立投影（C++ 那条仍会覆盖）")
 
+        # 独立核对**每类事件的条数**（含五类富事件）：C++ 那边比的是建模指纹，这里用
+        # Python 自己的 json 数一遍 —— 两条判据互不依赖。缺一类就会在这里露出来。
+        # 只数**库建模的** eventType：未知类型在**解析期**就被两条路径丢掉了，
+        # 导出物里没有它是正确行为，不是丢数据（`f19` 里那条 `UnknownType` 就是样本）。
+        KNOWN = {"Twirl", "SetSpeed", "PositionTrack", "SetHitsound", "Bookmark", "Pause",
+                 "AnimateTrack", "MoveCamera", "RepeatEvents", "ColorTrack", "RecolorTrack",
+                 "Flash", "MoveTrack", "ScaleRadius"}
+
+        def type_counts(doc):
+            c = {}
+            for a in (doc.get("actions") or []):
+                if isinstance(a, dict) and a.get("eventType") in KNOWN:
+                    c[a["eventType"]] = c.get(a["eventType"], 0) + 1
+            return c
+        if src_doc is not None:
+            want_c, got_c = type_counts(src_doc), type_counts(exported_doc)
+            if want_c != got_c:
+                fail(f"{tag}: 事件条数不一致（源 {want_c} vs 导出 {got_c}）")
+            else:
+                extra = {k: v for k, v in got_c.items()
+                         if k not in ("Twirl", "SetSpeed", "PositionTrack", "SetHitsound",
+                                      "Bookmark", "Pause", "AnimateTrack")}
+                if extra:
+                    print(f"OK: {tag} 事件条数一致（富事件 {extra}）")
+
         # 导出物必须自带全部建模 settings 键（自描述，不靠默认值补）
         if sorted(exported_doc.get("settings", {}).keys()) != sorted(SETTINGS_DEFAULTS.keys()):
             fail(f"{tag}: 导出的 settings 键集合不是那 {len(SETTINGS_DEFAULTS)} 个建模字段"

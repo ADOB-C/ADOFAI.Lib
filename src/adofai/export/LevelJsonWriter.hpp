@@ -37,11 +37,13 @@ bool writeJson(const LevelData& level, std::string& out, std::string& err);
 
 // 这份 `LevelData` 能不能写成**明文 JSON**？
 //
-// 2026-10-18 起不能保证：上游把 MoveCamera / RepeatEvents / ColorTrack+RecolorTrack /
-// Flash / MoveTrack 五类事件搬进了**富结构**（`cameraEvents` 等），ScaleRadius 更是只把结果
-// 烘进 tile 位置、原始事件都不留 —— 这些**都没有 `.adofai` 的 JSON 表示**。
-// 写明文就会静默丢掉它们（而 `.adocao` 有第 9~13 段专门存前五类）。
-// 所以：不能写就**明确拒绝**（`why` 里列出是哪几类、各多少条），绝不静默给半截文件。
+// 2026-10-22 起，五类"富事件"（MoveCamera / RepeatEvents / ColorTrack+RecolorTrack / Flash /
+// MoveTrack）**都能**写回 `actions` 了（见 `putRichEvents()`）。
+//
+// 只剩 **ScaleRadius** 不行：上游解析它时就把结果烘进了 `tiles[i].position`，
+// **原始事件一个字段都没留**（没有 floor、没有数值），`.adocao` 也不存它 ——
+// 所以这不是"还没做"，是"模型里没有"。遇到它就**明确拒绝**（`why` 里说明原因），
+// 绝不静默写出一个少了事件的文件。
 bool canExport(const LevelData& level, std::string* why = nullptr);
 
 // "库建模字段"的指纹（FNV-1a-64，逐字段按位喂字节）：

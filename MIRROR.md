@@ -219,9 +219,20 @@ rsync 是按 `core archive audio …` 逐目录拷的，本来也不会碰它。
    另加一条 `canExport` 与模型现状的对照（"说能写、但谱里含富事件" → 红），
    防它自己漂。
 
-**还没做的**：把这五类事件写成 JSON。那是一件独立的工作（要把 ease id ↔ 名字、
-relativeTo/disabled/flags、TileColorConfig 各字段、颜色/透明度归一化都映射回去），
-不是一次对齐能顺手带完的。在它落地之前，含这些事件的谱只能导出成 `.adocao`。
+**做完了（2026-10-22）**：五类富事件现在都写回 `actions`（`putRichEvents()`，各自按 `order`
+升序）。字段名与取值口径全部照 `LevelData.cpp` 的 `jsonRead*Event()` 反着写：
+ease 走 `easeName()`、relativeTo / flashStyle / plane 走名字、`startTile` 用 `"Start+3"` 这类
+字符串、透明度与缩放按 ×100 归一化（写成 `(double)v*100.0`，让 ×100→÷100 精确回到原 float）。
+`modelDigest` 也把这五类加进了指纹（**只算输入字段**：`order` 会被重新编号，
+`trigger`/`durSec`/`lo`/`hi` 是解析后才算的派生值，算进去就永远不等）。
+
+两个实现细节值得记：
+* **缺分量的位置要写 `null`**（不是 0）：`MoveTrack.positionOffset` 的 `kMoveOffX/kMoveOffY` 是
+  **逐分量**的位，写 `0` 会让解析侧多置一个位 → 指纹不等。
+* `RepeatEvent` / `FlashEvent` **没有 `order` 字段**，用下标/floor 当序即可（同类型内部有序就够，
+  跨类型先后解析侧不关心）。
+
+**仍然不行的只有 ScaleRadius**：上游只把结果烘进砖位、原始事件没留，任何实现都还不了原。
 
 ### 第六次对齐（868ed24，30 个提交）：core 里第一次出现架构 intrinsic
 

@@ -171,10 +171,13 @@ if (!adofai::exporter::exportLevel(level, "out.adocao", err, adofai::exporter::O
 * **未知 `eventType` 的 action 会没有** —— 两条解析路径在**读入时**就丢弃它们，不是导出丢的；
 * 未建模的 settings 键、`decorations`、注释、键序、数字字面量的写法（`1e2` 与 `100`）都不保留；
 * `pathData` 型的谱面导出后会**同时**带一份 `angleData`（保真优先于体积；要体积就用 `.adocao`）；
-* ⚠️ **五类富事件没有 `.adofai` 的 JSON 表示**：MoveCamera / RepeatEvents / ColorTrack+RecolorTrack /
-  Flash / MoveTrack 在 2026-10-18 起搬进了富结构（`cameraEvents` 等），ScaleRadius 更是只把结果
-  烘进砖位、原始事件都不留。这种谱 `exportLevel` 会**明确拒绝**写明文（`canExport()` 可以先问），
-  并告诉你要换 `.adocao` —— 绝不静默写出一个少了全部事件的文件。
+* **五类"富事件"也能写回去了**：MoveCamera / RepeatEvents / ColorTrack+RecolorTrack / Flash /
+  MoveTrack 在 2026-10-18 起搬进了富结构（`cameraEvents` 等），导出模块按各自 `order` 把它们
+  写回 `actions` —— 字段级逐位往返（含 ease 名字、relativeTo、disabled/flags、`"Start+3"` 这种
+  层引用、透明度/缩放的 ×100 归一化），由 `ctest export_roundtrip` 对五个夹具逐一钉住。
+* ⚠️ **唯一的例外是 ScaleRadius**：上游解析它时就把结果烘进 `tiles[i].position`、**原始事件一个
+  字段都没留**（`.adocao` 也不存它）。这种谱 `exportLevel` 会**明确拒绝**写明文
+  （`canExport()` 可以先问），并说明原因 —— 绝不静默写出一个少了事件的文件。
 
 要**无损回写**（连未知成员一起保留）现在做不到 —— 那要等上游的 `Preserved` 段
 （[ADOCAO](https://github.com/ADOB-C/ADOCAO) 的 TODO ⑦）。`.adocao` 的完整格式规范
