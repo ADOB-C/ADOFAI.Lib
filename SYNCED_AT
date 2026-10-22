@@ -5,9 +5,22 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=5524ee6
-ADOCAO_COMMIT_FULL=5524ee68336e616573f48e991d110029c25a7909
+ADOCAO_COMMIT=596138c
+ADOCAO_COMMIT_FULL=596138c0b750a0ce4a4f4775b6407c08b5785db0
 ADOCAO_COMMIT_DATE=2026-10-21
+# 本次同步要点（3 个提交；210 个镜像文件逐字节一致）：
+#
+#  1. `Timeline` 把**块物化粒度与锚点解耦**（1024），recomputeBlock 的 p90 降到 1/4。
+#  2. **`core/level/JsonScan.hpp` 去掉了 MSVC 分支**（只认 GCC/Clang 的宏）。
+#     ⚠️ 它的注释说"MSVC 会落到标量兜底、仍能编译"，但 `ctz32` 无条件用 `__builtin_ctz` ——
+#     MSVC 会**编译失败**（不是变慢）。影响面：用预编译 `.a` 的消费者不受影响（JsonScan 只在
+#     LevelData.cpp 里编一次）；**从源码构建**的 MSVC 用户会失败。本库 CI 的 windows 是 MSYS2
+#     mingw64（GCC），所以 CI 看不出来。README 已写明"Windows 用 MinGW/GCC，MSVC 不支持"。
+#     建议上游只把 `ctz32` 的 4 行 `_MSC_VER` 分支加回去（向量后端保持只认 GCC/Clang）。
+#  3. 其余是 docs 提交。
+#
+# 上一次同步：5524ee6（样式段查询 trackStyleRunEnd + TileMesh 按 run 复用）。
+
 # 本次同步要点（3 个提交；210 个镜像文件逐字节一致）：
 #
 #  1. `LevelData::trackStyleRunEnd()`（样式段查询）：只在"块内没有 RecolorTrack 触发"的区间里

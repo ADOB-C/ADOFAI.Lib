@@ -255,6 +255,34 @@ header-only、零 CMake 改动、无新依赖。
 `FastAction` 多了 `strId2`（AnimateTrack 的 `trackAnimation` 字符串，之前只留了个 flag）——
 导出模块两处都跟上了：前者进写方与指纹，后者现在写**事件自己的**字符串而不是借 settings。
 
+### 第七次对齐（596138c）：`JsonScan` 去掉了 MSVC 分支 —— 一个要盯的回归
+
+上游那笔 `4908e56 refactor(level): JsonScan 去掉 MSVC 分支，只认 GCC/Clang 的宏`，理由写得很清楚：
+"不为 MSVC 做优化……不保留 `_M_*` 分支和 `<intrin.h>` / `_BitScanForward` 那套不可验证的路径
+（Windows 侧统一用 MinGW/GCC）"。
+
+**但注释里那句"MSVC 不定义这些宏时会直接落到标量兜底（仍能编译）"是不成立的。**
+`ctz32` 的定义在命名空间作用域、**无条件**用 `__builtin_ctz`：
+
+```cpp
+inline unsigned ctz32(uint32_t x) { return (unsigned)__builtin_ctz(x); }   // 第 49 行
+```
+
+向量后端确实被 `#if` 掉了（MSVC 不定义 `__SSE2__`），可 `ctz32` 是**普通函数定义**——
+MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。所以 MSVC 从源码构建
+`LevelData.cpp` 会**编译失败**，不是"变慢"。
+
+对库的影响分两种，必须分清：
+
+* **用预编译 `.a` 的消费者**：不受影响 —— `JsonScan.hpp` 只在 `LevelData.cpp` 里被编一次。
+* **源码构建（`add_subdirectory` / 自己编）的消费者**：MSVC 会失败。本库 CI 的 windows 那格是
+  **MSYS2 mingw64（GCC）**，所以 CI 看不出来。README 的"平台"一行已写明
+  "Windows 上请用 MinGW/GCC，MSVC 不在支持范围"。
+
+**建议上游只补一行**（这也是让那句注释变成真话的最小改法）：给 `ctz32` 加回
+`#if defined(_MSC_VER)` 的 `_BitScanForward` 分支（4 行），向量后端继续只认 GCC/Clang。
+其余部分（`_M_X64` 的 SSE2 分支）确实可以不保留 —— 那只是"MSVC 上少了向量加速"，不致命。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

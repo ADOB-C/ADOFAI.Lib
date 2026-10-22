@@ -12,6 +12,10 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 
 - **语言 / 构建**：C++20，CMake ≥ 3.20
 - **平台**：macOS / Linux / Windows
+  —— Windows 上请用 **MinGW/GCC**（本库 CI 的 windows 那格就是 MSYS2 mingw64）。
+  **MSVC 不在支持范围**：`core/level/JsonScan.hpp`（上游 2026-10-21 的决定）只用 GCC/Clang 的宏，
+  且 `ctz32` 直接用了 `__builtin_ctz` —— MSVC 会**编译失败**（不是"退化成标量"）。
+  用预编译好的 `.a` 不受影响；从源码构建（`add_subdirectory`）才需要 MinGW
 - **许可**：Apache-2.0
 - **仓库**：[ADOB-C/ADOFAI.Lib](https://github.com/ADOB-C/ADOFAI.Lib)
 
