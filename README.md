@@ -28,8 +28,10 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 - **砖色与闪屏**：trackStyle 的 fill/stroke 派生、ColorTrack/RecolorTrack 的补间、
   Flash 的全屏闪屏（`core/level/TileColor`、`render/` 的 `flash` 着色器）
 - **解析的结构扫描走 SIMD**：`core/level/JsonScan.hpp` 用整块掩码找结构字节（引号/括号），
-  四级后端 NEON(16B) / AVX2(32B) / SSE2(16B) / **无宏时纯标量**（与向量分支逐字符等价）；
-  header-only、零新依赖，而且**不装出去**（实现细节），所以消费者的公共头仍然零架构依赖
+  四级后端 NEON(16B) / AVX2(32B) / SSE2(16B) / **无宏时纯标量**（与向量分支逐字符等价）。
+  **SIMD 是编进 `libadofai_core.a` 的**（不需要你做任何事，`loadFromFile` 就是快的）；
+  那个头也装出去，方便你在**自己的** TU 里复用同一套原语 —— 但它是镜像来的内部工具头，
+  接口**不承诺稳定**（要用就钉住版本，见 [VERSIONING.md](VERSIONING.md)）
 - **大谱不靠蛮力**：角度可换**紧凑存储**（字典 + 位打包，MYC 实测 54 MB → 4.8 MB）、每砖结构
   可按块物化（`tilePositionAt`）、剔除可用**粗块 AABB 索引**（`render/CullIndex`）——
   三者都是"丢掉密集数组之后照样逐位正确"，各有独立的逐位对拍用例

@@ -14,8 +14,12 @@ ADOCAO_COMMIT_DATE=2026-10-21
 #     SIMD 分类（整块掩码算引号/括号，一次性抹掉串内括号；转义/未闭合/CR 一律整块退回标量）。
 #     四级后端：NEON(16B，arm64) / AVX2(32B) / SSE2(16B) / **无宏 → 纯标量**（与向量分支
 #     逐字符等价）。header-only、零 CMake 改动、无新依赖。**库这边只把它从安装集里排除**
-#     （它只被 LevelData.cpp include，是纯实现细节）→ 装出去的公共头仍然零架构依赖，
-#     实测前缀里搜 arm_neon/immintrin/emmintrin 一个都没有。见 MIRROR.md 的"第六次对齐"。
+#     **一开始把它从安装集里排除了，后来发现理由是错的并已恢复**：那个头只被 LevelData.cpp
+#     include，没有任何公共头引它 —— 装不装都不影响消费者"间接包含到什么"，排除它只是单方面
+#     砍掉下游复用的可能；而且 SIMD 是编进 libadofai_core.a 的（otool 数 LevelData.cpp.o：
+#     cmeq.16b ×44 / and.16b ×190 / addv.8b ×38），性能与头装不装无关。
+#     现在的口径：装出去，但它是**内部工具头**（接口随上游变动、不承诺稳定）。
+#     见 MIRROR.md 的"第六次对齐"。
 #  2. 逐砖关键帧：core/timeline/{Keyframes,TileAnimation}.{hpp,cpp}（纯计算）+ 三条新用例
 #     keyframes / tile_animation / time_origin。
 #  3. **时间基准**：Settings 多了 separateCountdownTime（Re_ADOJAS 的 getTimeOrigin）。

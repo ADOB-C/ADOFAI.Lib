@@ -265,12 +265,7 @@ if(ADOFAI_LIB_INSTALL)
     # 公共头：装出去的布局与源码树同一个 include 根（include/adofai/...）
     install(DIRECTORY "${ADOFAI_LIB_SRC_ROOT}/core/"
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/core
-        FILES_MATCHING PATTERN "*.hpp"
-        # `level/JsonScan.hpp` 是**实现细节**（只有 LevelData.cpp 引它），而且是 core 里
-        # 唯一会拖进架构 intrinsic 头（<arm_neon.h> / <immintrin.h> / <emmintrin.h>）的文件。
-        # 不装它，装出去的公共头就仍然"零架构依赖"—— 消费者 include LevelData.hpp 时
-        # 永远不会间接看到 <arm_neon.h>。四级后端与标量兜底见那个文件自己的注释。
-        PATTERN "level/JsonScan.hpp" EXCLUDE)
+        FILES_MATCHING PATTERN "*.hpp")
     if(ADOFAI_LIB_ENABLE_ARCHIVE)
         install(DIRECTORY "${ADOFAI_LIB_SRC_ROOT}/archive/"
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/adofai/archive

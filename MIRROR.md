@@ -230,15 +230,19 @@ relativeTo/disabled/flags、TileColorConfig 各字段、颜色/透明度归一�
 一个宏都不成立时**整段向量代码消失**、落回与向量分支逐字符等价的标量状态机。
 header-only、零 CMake 改动、无新依赖。
 
-库这边的取舍（**只做了 install 侧，不改镜像代码**）：
+库这边的结论（**一开始判错了，已改正**）：
 
-* 它**只被 `LevelData.cpp` include**，没有任何公共头引它 —— 是纯实现细节；
-* 所以让它**不进安装集**（根 CMakeLists 里 `PATTERN "level/JsonScan.hpp" EXCLUDE`）。
-  于是"装出去的公共头零架构依赖"仍然成立：实测 `cmake --install` 之后，
-  `/tmp/prefix/include/adofai/` 里搜 `arm_neon.h|immintrin.h|emmintrin.h` 一个都没有。
-  这一条比"靠宏保护"更强 —— 消费者 include `LevelData.hpp` 时根本不会间接看到那些头。
-* 上游的 `check-core-purity.sh` 也过（intrinsic 不算"平台头"），所以两边口径不冲突：
-  上游允许 core 用 intrinsic，本库只是**不把它装给消费者**。
+* 起先我把 `level/JsonScan.hpp` 从安装集里排除了，理由是"装出去的公共头应零架构依赖"。
+  **那个理由是错的**：这个头**只被 `LevelData.cpp` include**，没有任何公共头引它 ——
+  装不装都不影响消费者间接包含到什么，排除它只是**单方面砍掉了下游复用的可能**。
+* 而且**性能根本不依赖那个头**：SIMD 路径是编进 `libadofai_core.a` 的。证据（本机 arm64，
+  `otool -tv` 数 `LevelData.cpp.o`）：`cmeq.16b` ×44、`and.16b` ×190、`addv.8b` ×38 ——
+  向量的逐块分类确实在里面。所以消费者 `loadFromFile` 拿到的已经是 SIMD 路径，
+  与头装不装无关。
+* 于是恢复安装。口径改成：**装出去，但它是内部工具头**（`adofai::jsonscan`，
+  镜像自上游、接口随上游变动、不承诺稳定）。要用就按 VERSIONING.md 钉版本。
+* 上游的 `check-core-purity.sh` 也过（intrinsic 不算"平台头"）—— 两边口径一致：
+  core 里允许 intrinsic，本库不额外设限。
 
 **后端覆盖情况（诚实版）**：NEON 由 arm64 macOS 那格跑、SSE2 由 x86 的 Linux/Windows 那格跑，
 两边都会跑同一批解析对拍（`level_parse_parity` 比快路径与 RapidJSON 老路径逐位一致），
