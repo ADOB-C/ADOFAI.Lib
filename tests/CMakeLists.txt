@@ -234,6 +234,21 @@ add_executable(adofai_camera_test camera_test.cpp)
 target_link_libraries(adofai_camera_test PRIVATE ADOFAI::core)
 add_test(NAME camera COMMAND adofai_camera_test)
 
+# 关键帧 / 逐砖时间轴 / 时间原点的三条（2026-10-21 上游新增，都只链 core）。
+# `time_origin` 盯的是 `separateCountdownTime` 决定的**时间基准**：它一旦错，整条时间线
+# （以及打拍音、运镜）都会整体平移 —— 所以单独一条用例，而不是混在 timeline_anchor 里。
+add_executable(adofai_keyframes_test keyframes_test.cpp)
+target_link_libraries(adofai_keyframes_test PRIVATE ADOFAI::core)
+add_test(NAME keyframes COMMAND adofai_keyframes_test)
+
+add_executable(adofai_tile_animation_test tile_animation_test.cpp)
+target_link_libraries(adofai_tile_animation_test PRIVATE ADOFAI::core)
+add_test(NAME tile_animation COMMAND adofai_tile_animation_test)
+
+add_executable(adofai_time_origin_test time_origin_test.cpp)
+target_link_libraries(adofai_time_origin_test PRIVATE ADOFAI::core)
+add_test(NAME time_origin COMMAND adofai_time_origin_test)
+
 # Easing（从 render/ 搬到 core/util/）+ 砖色模型：都是纯函数，金标逐位比对。
 add_executable(adofai_easing_test easing_test.cpp)
 target_link_libraries(adofai_easing_test PRIVATE ADOFAI::core)

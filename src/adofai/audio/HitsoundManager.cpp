@@ -252,11 +252,19 @@ bool HitsoundManager::preSynthesize(const std::vector<HitsoundTimestampGroup>& g
     //     receive the same value (both start at 0 and every add is identical), so
     //     accumulating one channel and duplicating at the end is exact — and halves
     //     the read-modify-write traffic.
-    //  3. The output is swept in blocks that fit in L2, and a block only visits the
-    //     hits overlapping it, so source data stays hot; blocks are independent and
-    //     are handed to worker threads (no locking, hits visited in timestamp order
-    //     inside a block).
-    constexpr int kBlockFrames = 1 << 16;      // 65536 frames = 128 KB mono int16
+    //  3. The output is swept in blocks, and a block only visits the hits overlapping
+    //     it, so source data stays hot; blocks are independent and are handed to
+    //     worker threads (no locking, hits visited in timestamp order inside a block).
+    //
+    // Block size was 65536 frames (128 KB) and is now 4096 (8 KB): every hit does a
+    // read-modify-write of the SAME destination block, and 128 KB + the ~19 KB source
+    // does not fit in L1, so each add paid L2 traffic. At 8 KB both the block and the
+    // source stay in L1. The partition point is invisible in the output: each sample
+    // still receives exactly its overlapping hits, in timestamp order, so the
+    // saturating (order-dependent) accumulation is unchanged — verified byte-identical
+    // on the mixer's full buffers. Narrower blocks do add one upper_bound per block and
+    // per group, which is free next to millions of sample adds.
+    constexpr int kBlockFrames = 1 << 12;      // 4096 frames = 8 KB mono int16
     const size_t numBlocks = ((size_t)totalFrames + kBlockFrames - 1) / kBlockFrames;
 
     // Prepared per-group scaled source (see 1). `wide` is only used when a scaled
@@ -319,12 +327,53 @@ bool HitsoundManager::preSynthesize(const std::vector<HitsoundTimestampGroup>& g
                     const int n = i1 - i0;
                     int i = 0;
 #if defined(__ARM_NEON)
+                    // 32 samples per iteration (4 x the 8-lane kernel). The loads are
+                    // issued before any store on purpose: with the store interleaved
+                    // after each add the backend cannot pair the source loads or the
+                    // stores (may-alias), while this shape becomes 4 x ldp + 4 x sqadd
+                    // + 2 x stp for the same 32 samples. Lane order is untouched.
+                    for (; i + 32 <= n; i += 32) {
+                        int16x8_t a0 = vld1q_s16(d + i);
+                        int16x8_t a1 = vld1q_s16(d + i + 8);
+                        int16x8_t a2 = vld1q_s16(d + i + 16);
+                        int16x8_t a3 = vld1q_s16(d + i + 24);
+                        int16x8_t b0 = vld1q_s16(sAdd + i);
+                        int16x8_t b1 = vld1q_s16(sAdd + i + 8);
+                        int16x8_t b2 = vld1q_s16(sAdd + i + 16);
+                        int16x8_t b3 = vld1q_s16(sAdd + i + 24);
+                        a0 = vqaddq_s16(a0, b0);
+                        a1 = vqaddq_s16(a1, b1);
+                        a2 = vqaddq_s16(a2, b2);
+                        a3 = vqaddq_s16(a3, b3);
+                        vst1q_s16(d + i,      a0);
+                        vst1q_s16(d + i + 8,  a1);
+                        vst1q_s16(d + i + 16, a2);
+                        vst1q_s16(d + i + 24, a3);
+                    }
                     for (; i + 8 <= n; i += 8) {
                         int16x8_t a = vld1q_s16(d + i);
                         int16x8_t b = vld1q_s16(sAdd + i);
                         vst1q_s16(d + i, vqaddq_s16(a, b));   // saturating add == clamp
                     }
 #elif defined(__SSE2__)
+                    for (; i + 32 <= n; i += 32) {
+                        __m128i a0 = _mm_loadu_si128((const __m128i*)(d + i));
+                        __m128i a1 = _mm_loadu_si128((const __m128i*)(d + i + 8));
+                        __m128i a2 = _mm_loadu_si128((const __m128i*)(d + i + 16));
+                        __m128i a3 = _mm_loadu_si128((const __m128i*)(d + i + 24));
+                        __m128i b0 = _mm_loadu_si128((const __m128i*)(sAdd + i));
+                        __m128i b1 = _mm_loadu_si128((const __m128i*)(sAdd + i + 8));
+                        __m128i b2 = _mm_loadu_si128((const __m128i*)(sAdd + i + 16));
+                        __m128i b3 = _mm_loadu_si128((const __m128i*)(sAdd + i + 24));
+                        a0 = _mm_adds_epi16(a0, b0);
+                        a1 = _mm_adds_epi16(a1, b1);
+                        a2 = _mm_adds_epi16(a2, b2);
+                        a3 = _mm_adds_epi16(a3, b3);
+                        _mm_storeu_si128((__m128i*)(d + i),      a0);
+                        _mm_storeu_si128((__m128i*)(d + i + 8),  a1);
+                        _mm_storeu_si128((__m128i*)(d + i + 16), a2);
+                        _mm_storeu_si128((__m128i*)(d + i + 24), a3);
+                    }
                     for (; i + 8 <= n; i += 8) {
                         __m128i a = _mm_loadu_si128((const __m128i*)(d + i));
                         __m128i b = _mm_loadu_si128((const __m128i*)(sAdd + i));
@@ -337,6 +386,11 @@ bool HitsoundManager::preSynthesize(const std::vector<HitsoundTimestampGroup>& g
                         d[i] = (int16_t)v;
                     }
                 } else {
+                    // Widened samples (>100% volume) stay scalar on purpose: clang
+                    // already auto-vectorizes this loop into ldp + saddw + sqxtn + stp,
+                    // and a hand written NEON version measured SLOWER than it (90-105 ms
+                    // vs 72 ms for 9.5e8 adds). No chart in the corpus has a volume > 100,
+                    // so this branch never even runs there.
                     const int32_t* sAdd = pr.wide + i0;
                     for (int i = 0, k = i0; k < i1; ++i, ++k) {
                         int v = (int)d[i] + (int)sAdd[i];

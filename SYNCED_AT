@@ -5,9 +5,36 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=9ac56ec
-ADOCAO_COMMIT_FULL=9ac56ec4a8fc8ed1d212b226c2dab54c7712fc32
-ADOCAO_COMMIT_DATE=2026-10-18
+ADOCAO_COMMIT=868ed24
+ADOCAO_COMMIT_FULL=868ed24d3d0d4ebbbb5ab297db0312d08bb23fec
+ADOCAO_COMMIT_DATE=2026-10-21
+# 本次同步要点（30 个提交，22 个镜像文件改动；209 个镜像文件逐字节一致）：
+#
+#  1. **core 里第一次出现架构 intrinsic**：新增 core/level/JsonScan.hpp —— JSON 结构字节的
+#     SIMD 分类（整块掩码算引号/括号，一次性抹掉串内括号；转义/未闭合/CR 一律整块退回标量）。
+#     四级后端：NEON(16B，arm64) / AVX2(32B) / SSE2(16B) / **无宏 → 纯标量**（与向量分支
+#     逐字符等价）。header-only、零 CMake 改动、无新依赖。**库这边只把它从安装集里排除**
+#     （它只被 LevelData.cpp include，是纯实现细节）→ 装出去的公共头仍然零架构依赖，
+#     实测前缀里搜 arm_neon/immintrin/emmintrin 一个都没有。见 MIRROR.md 的"第六次对齐"。
+#  2. 逐砖关键帧：core/timeline/{Keyframes,TileAnimation}.{hpp,cpp}（纯计算）+ 三条新用例
+#     keyframes / tile_animation / time_origin。
+#  3. **时间基准**：Settings 多了 separateCountdownTime（Re_ADOJAS 的 getTimeOrigin）。
+#     导出的写方与指纹都补上了 —— 它错了整条时间线会整体平移。
+#  4. **AnimateTrack 的 trackAnimation 终于建模了**：FastAction 多了 strId2（之前只留 flag，
+#     值被丢掉）。导出因此改成写**事件自己的**字符串，不再借 settings 那份（那是近似）。
+#  5. 两个纯算法提交（findTileIndex 二分、已有序时跳过 stable_sort），原样镜像。
+#  6. assets/shaders/{tile,tile_cpu}.vert 与 render/{Shaders,TileMesh,Camera} 同步；
+#     archive 侧只是格式记录的注释/字段小改。
+#
+# 后端覆盖（诚实版）：NEON 由 arm64 macOS 那格跑、SSE2 由 x86 Linux/Windows 跑，两边都跑
+# level_parse_parity（快路径 vs RapidJSON 老路径逐位一致）→ 那两种后端被 CI 钉住。
+# **标量兜底只在异架构（arm32 / 无 SSE2 的老 x86）生效，没有 CI 覆盖**（纯标量，风险低但未验）。
+#
+# 上游仍有的问题（不是库改出来的）：AdocaoWindow.cpp:94 的 `b / 0`（UB）仍在；
+# LevelArchive.cpp / AdocaoColumns.cpp 的 -Wswitch 仍在。
+#
+# 上一次同步：9ac56ec（相机系统进 core、砖色/闪屏、Easing 搬家；导出补 canExport）。
+
 # 本次同步要点（**110 个提交**，镜像区 71 个文件、+3979/−988；201 个镜像文件逐字节一致）：
 #
 #  0. **镜像源改成 HEAD 快照**：上游工作区当时是脏的（4 个镜像文件有未提交改动），而 rsync

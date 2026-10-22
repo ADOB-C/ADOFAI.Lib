@@ -93,6 +93,8 @@ bool putSettings(Writer& w, const LevelData::Settings& s, std::string& err)
     if (!putF(w, s.trackGlowIntensity, err, "settings.trackGlowIntensity")) return false;
     w.Key("pitch");        if (!putF(w, s.pitch, err, "settings.pitch")) return false;
     w.Key("legacyCamRelativeTo"); w.Bool(s.legacyCamRelativeTo);
+    // 2026-10-21：它决定时间基准（Re_ADOJAS getTimeOrigin）—— 写丢了整条时间线会整体平移。
+    w.Key("separateCountdownTime"); w.Bool(s.separateCountdownTime);
     w.EndObject();
     return true;
 }
@@ -167,7 +169,10 @@ bool putAction(Writer& w, const LevelData& level, const T& a, std::string& err)
             w.String(str.c_str(), (rapidjson::SizeType)str.size());
         }
         if (a.flag) {
-            const std::string& ta = level.settings.trackAnimation;
+            // 2026-10-21 起这条是**事件自己的**字符串（`strId2`），不再借 settings 那份。
+            // 之前上游只留了一个"有没有写这个键"的 flag，值被丢掉 —— 于是导出的
+            // `trackAnimation` 只能拿 settings 顶上，那是近似的；现在可以逐位还原。
+            const std::string& ta = level.actionStr2(a);
             w.Key("trackAnimation"); w.String(ta.c_str(), (rapidjson::SizeType)ta.size());
         }
         if (a.val1 >= 0.0f) {
@@ -238,6 +243,7 @@ void digestSettings(Digest& d, const LevelData::Settings& s)
     d.f32(s.trackGlowIntensity);
     d.f32(s.pitch);
     d.u8(s.legacyCamRelativeTo ? 1 : 0);
+    d.u8(s.separateCountdownTime ? 1 : 0);
 }
 
 }  // namespace
@@ -348,6 +354,7 @@ uint64_t modelDigest(const LevelData& level)
         d.i32(a.floor);
         d.u8((uint8_t)a.type);
         d.str(level.actionStr(a));      // 解出来的字符串才是语义，strId 只是池里的下标
+        d.str(level.actionStr2(a));     // AnimateTrack 的 trackAnimation（2026-10-21 起建模）
         d.u8(a.flag ? 1 : 0);
         d.f32(a.val1);
         d.f32(a.val2);

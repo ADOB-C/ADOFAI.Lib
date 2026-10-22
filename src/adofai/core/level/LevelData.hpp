@@ -37,6 +37,7 @@ struct LevelData {
         float  bpm = 100.0f;
         float  offset = 0.0f;        // ms
         int    countdownTicks = 4;
+        bool   separateCountdownTime = false;   // 决定时间基准（Re_ADOJAS getTimeOrigin）
         float  zoom = 100.0f;
         float  rotation = 0.0f;
         std::string relativeTo = "Player";
@@ -210,6 +211,9 @@ struct LevelData {
     bool hasScaleRadiusEvents() const { return m_hasScaleRadius; }
     MoveTransform moveTransformAt(int64_t floor, double timeSec) const;
     float movePad() const { return m_movePad; }
+    // 已展开（RepeatEvents 处理完、范围/触发时刻已解析）的 MoveTrack 事件表。
+    // 逐砖关键帧时间轴（core/timeline/TileAnimation）复用它建帧 —— 别再自己展开一遍。
+    const std::vector<MoveTrackEvent>& moveEvents() const { return m_moveIndex; }
 
     // ── Flash（全屏闪屏）──────────────────────────────────────────────
     // 语义见 Re_ADOJAS `FlashEffect`：每条事件把某个 plane 从 start 补到 end；
@@ -244,6 +248,7 @@ struct LevelData {
         int32_t lo = 0, hi = 0, gap = 0;
         double  trigger = 0.0;    // 秒
         double  beat = 0.0;       // 该事件 floor 的一拍（秒）
+        float   angleOffset = 0.0f;  // 度：负值 = 提前触发（-99999 这类极端值 = 从开头就生效）
         float   duration = 0.0f;  // 拍
         uint8_t ease = 0;
         uint32_t order = 0;
@@ -282,6 +287,18 @@ struct LevelData {
     TileColors baseColorsAt(int64_t floor, double timeSec, float amplitude = 0.0f,
                             const Timeline* timeline = nullptr) const;
 
+    // 该砖在 `timeSec` 时刻的 trackStyle（几何档位）。
+    // 规则的**另一半**与 tileColorsAt 相同：先取 colorEventAt 的静态段（settings 或 ColorTrack），
+    // 再叠加最后一条 `trigger <= timeSec` 且范围覆盖该层的 RecolorTrack 的 cfg.style。
+    // 为什么必须走这条：trackStyle **只**出现在 RecolorTrack / ColorTrack 事件里，而
+    // colorEventAt 刻意跳过 kColorIsRecolor —— 只用它会让所有砖退化成 Standard，
+    // 于是 Neon/Basic 少了"放大半宽 +0.025 / 半长 +0.02"的搭接，接缝直接露背景
+    // （2025 全曲 1793 条 Neon 全中招，画面里是一圈白框 + 被邻砖圆角啃掉一角）。
+    // `timeline` 非空时用**精确**判据：事件的 trigger 必须早于该砖自己的起始时刻；
+    // 为空时退回"每层 1 拍"的估计（只用于测试/无 Timeline 的路径，别当正式语义）。
+    std::string trackStyleAt(int64_t floor, double timeSec,
+                             const Timeline* timeline = nullptr) const;
+
     // 某层处生效的**持久段**（忽略 justThisTile / inactive / editorOnly）；没有 → nullptr。
     const ColorEvent* persistentColorAtOrBefore(int64_t floor) const;
     // 严格早于 floor 的最后一条持久段（TweenColor 的 "from" 色）。
@@ -295,6 +312,10 @@ struct LevelData {
     struct FastAction {
         int floor = 0;
         uint16_t strId = 0;                 // 0 = 空串；索引进 actionStrTable
+        // AnimateTrack 专用：`trackAnimation` 的字符串（strId 存的是 `trackDisappearAnimation`）。
+        // 2026-10-21 之前只留了一个 `flag`（"有没有写 trackAnimation"），字符串本身被丢掉 →
+        // 逐事件的 appear 类型永远等于全局 settings，跟 Re_ADOJAS 不一致。
+        uint16_t strId2 = 0;
         // MoveCamera / RepeatEvents **不留在 actions 里**（keep=false）：它们走 cameraEvents /
         // repeatEvents 两个富结构。这两个枚举值只用于"解析时认出它"。
         enum Type : uint8_t { Twirl, SetSpeed, PositionTrack, SetHitsound, Bookmark, Pause, AnimateTrack, MoveCamera, RepeatEvents, ColorTrack, RecolorTrack, Flash, MoveTrack, Other, ScaleRadius } type = Other;
@@ -308,6 +329,10 @@ struct LevelData {
     uint16_t internActionStr(const std::string& v) { return internActionStrIn(actionStrTable, v); }
     const std::string& actionStr(const FastAction& a) const {
         return a.strId < actionStrTable.size() ? actionStrTable[a.strId] : actionStrTable[0];
+    }
+    // AnimateTrack 的 `trackAnimation`（strId2）；空串 = 事件没写。
+    const std::string& actionStr2(const FastAction& a) const {
+        return a.strId2 < actionStrTable.size() ? actionStrTable[a.strId2] : actionStrTable[0];
     }
 
     // ③ 切片 4（第 1 步）：**运行期读者不要再直接碰 `tiles[i]`** —— `tiles` 现在会按块物化，
@@ -398,7 +423,17 @@ struct LevelData {
     std::vector<int> bookmarkFloors;  // Bookmark event floors
 
     // AnimateTrack state overrides (sparse, floor → state)
-    struct ATState { std::string da, aa; float bb=4, ba=3; bool hasAA=false; };
+    // 逐事件的 AnimateTrack 状态。**只记"事件写了什么"**，缺省/继承的语义全在
+    // `Timeline::build()` 里按 Re_ADOJAS 的规则做（见 TimelineManager.ts:1046-1116）：
+    //   * trackAnimation 缺失 → 继承上一条；beatsAhead 缺失 → 沿用上一条
+    //   * trackDisappearAnimation 缺失 → **None**（不继承）；beatsBehind 缺失 → 沿用上一条
+    // float 用负数表示"事件没写这个字段"。
+    struct ATState {
+        std::string da, aa;             // 事件原文（da 空 = 没写；aa 空 = 没写）
+        float bb = -1.0f, ba = -1.0f;   // <0 = 没写
+        bool hasAA = false;             // 写了 trackAnimation（flag2 的判据）
+        bool hasDA = false;             // 写了 trackDisappearAnimation
+    };
     std::unordered_map<int, ATState> atStates;
     // 粘性标志：releaseMemory() 会清掉 atStates 的实体（每条 101 B，巨谱上是几十 MB~几百 MB），
     // 但 Timeline 与 LevelScene 都要按"有没有 AnimateTrack"来判定 TrackVis —— 那个判定发生在

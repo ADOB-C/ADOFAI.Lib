@@ -27,6 +27,9 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
   纯计算不碰 GL），也提供 `camera` / `camera_timeline` / `camera_zoom` 三条金标测试
 - **砖色与闪屏**：trackStyle 的 fill/stroke 派生、ColorTrack/RecolorTrack 的补间、
   Flash 的全屏闪屏（`core/level/TileColor`、`render/` 的 `flash` 着色器）
+- **解析的结构扫描走 SIMD**：`core/level/JsonScan.hpp` 用整块掩码找结构字节（引号/括号），
+  四级后端 NEON(16B) / AVX2(32B) / SSE2(16B) / **无宏时纯标量**（与向量分支逐字符等价）；
+  header-only、零新依赖，而且**不装出去**（实现细节），所以消费者的公共头仍然零架构依赖
 - **大谱不靠蛮力**：角度可换**紧凑存储**（字典 + 位打包，MYC 实测 54 MB → 4.8 MB）、每砖结构
   可按块物化（`tilePositionAt`）、剔除可用**粗块 AABB 索引**（`render/CullIndex`）——
   三者都是"丢掉密集数组之后照样逐位正确"，各有独立的逐位对拍用例
@@ -43,7 +46,7 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 32/32
+ctest --test-dir build          # 默认 35/35
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
@@ -257,7 +260,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 32 条 / render=ON 37 条**（随模块开关增减）：
+**render=OFF 35 条 / render=ON 40 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|
@@ -271,6 +274,7 @@ ctest --test-dir build
 | `ilytx` | Re_ADOJAS 的 `.ilytx`（xz(tar(ilybin))）与参照谱逐位等价；紧凑模式的 f32 误差；三个坏样本必须干净失败 |
 | `angle_store` / `floor_window_cache` / `timeline_anchor` | 角度紧凑存储、每砖按块物化、Timeline 每 4096 层锚点 —— 都是"丢掉密集数组之后与全量逐位相同"，各带反面对照 |
 | `release_contract` | `releaseMemory()` 之后 `tileBPMs` / `tileHasTwirl` / `tileHasSetSpeed` 必须逐位不变 —— **图标位是绘制期现算的**，清掉它们图标会静默全消失（上游 app 真踩过）。不碰 GL，CI 上真跑 |
+| `keyframes` / `tile_animation` / `time_origin` | 逐砖关键帧求值、逐砖时间轴、以及 `separateCountdownTime` 决定的**时间基准**（它错了整条时间线会整体平移）|
 | `level_reload` | 关卡对象的**所有权与幂等**：`LevelData` 不可拷贝（缓存所有权）、可安全移动、`loadFromBuffer` 两次 == 一次（actions 不许被追加）、`releaseAngleData()` 之后仍能建窗口缓存 |
 | `bit_span` / `cull_index` / `cull_cost` | 位图区间置值、粗块 AABB 索引与全扫逐元素对拍、三种剔除策略的候选数/漏砖数/耗时留痕 |
 | `export_roundtrip` | 四种格式的导出都必须**读得回来且建模字段逐位相同**；同输入两次导出逐字节相同；明文导出还要老解析路径也读得动；`.adocao` 的 pack 与原件的 pack 逐字节相同。**同一条测试就是导出模块的漂移护栏**（上游给模型加字段而导出没跟上 → 红）|

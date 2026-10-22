@@ -223,6 +223,34 @@ rsync 是按 `core archive audio …` 逐目录拷的，本来也不会碰它。
 relativeTo/disabled/flags、TileColorConfig 各字段、颜色/透明度归一化都映射回去），
 不是一次对齐能顺手带完的。在它落地之前，含这些事件的谱只能导出成 `.adocao`。
 
+### 第六次对齐（868ed24，30 个提交）：core 里第一次出现架构 intrinsic
+
+`core/level/JsonScan.hpp` 是 core 里第一个用架构 intrinsic 的文件（`<arm_neon.h>` /
+`<immintrin.h>` / `<emmintrin.h>`）。本机是 arm64，走 NEON；x86 上走 SSE2/AVX2；
+一个宏都不成立时**整段向量代码消失**、落回与向量分支逐字符等价的标量状态机。
+header-only、零 CMake 改动、无新依赖。
+
+库这边的取舍（**只做了 install 侧，不改镜像代码**）：
+
+* 它**只被 `LevelData.cpp` include**，没有任何公共头引它 —— 是纯实现细节；
+* 所以让它**不进安装集**（根 CMakeLists 里 `PATTERN "level/JsonScan.hpp" EXCLUDE`）。
+  于是"装出去的公共头零架构依赖"仍然成立：实测 `cmake --install` 之后，
+  `/tmp/prefix/include/adofai/` 里搜 `arm_neon.h|immintrin.h|emmintrin.h` 一个都没有。
+  这一条比"靠宏保护"更强 —— 消费者 include `LevelData.hpp` 时根本不会间接看到那些头。
+* 上游的 `check-core-purity.sh` 也过（intrinsic 不算"平台头"），所以两边口径不冲突：
+  上游允许 core 用 intrinsic，本库只是**不把它装给消费者**。
+
+**后端覆盖情况（诚实版）**：NEON 由 arm64 macOS 那格跑、SSE2 由 x86 的 Linux/Windows 那格跑，
+两边都会跑同一批解析对拍（`level_parse_parity` 比快路径与 RapidJSON 老路径逐位一致），
+所以"向量 == 标量语义"在**这两种后端上**是被 CI 钉住的。
+**标量兜底那条只会在异架构（arm32 / 老 x86 且无 SSE2）上生效，没有 CI 覆盖** ——
+它是纯标量实现，风险低，但不是"验过"。
+
+同一批里还有两个纯算法提交（`findTileIndex` 二分、已有序时跳过 `stable_sort`），与 intrinsic
+无关，原样镜像。另外 `Settings` 多了一个 `separateCountdownTime`（决定**时间基准**），
+`FastAction` 多了 `strId2`（AnimateTrack 的 `trackAnimation` 字符串，之前只留了个 flag）——
+导出模块两处都跟上了：前者进写方与指纹，后者现在写**事件自己的**字符串而不是借 settings。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

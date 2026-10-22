@@ -3,6 +3,7 @@
 #include "FloorWindow.hpp"   // ③ 切片 4：按块物化缓存（~LevelData 需要完整类型）
 #include "JsonCleaner.hpp"
 #include "ByteSource.hpp"   // 容器识别 + 解压后端接口（实现见 archive/）
+#include "JsonScan.hpp"     // 结构扫描的 SIMD 字节分类（纯结构，不碰数值）
 #include "core/util/Logger.hpp"
 #include "core/util/Env.hpp"
 #include "core/util/Scheduler.hpp"
@@ -101,42 +102,14 @@ inline const char* skipWs(const char* p, const char* e) {
     return p;
 }
 
-// p 指向开引号；返回闭引号位置，失败返回 nullptr。
-inline const char* scanStringEnd(const char* p, const char* e) {
-    for (++p; p < e; ++p) {
-        if (*p == '\\') { if (p + 1 >= e) return nullptr; ++p; continue; }
-        if (*p == '"') return p;
-    }
-    return nullptr;
-}
-
-// 与 scanStringEnd 相同，但字符串里出现转义或裸 CR 就直接放弃：
-//   * RapidJSON 非 in-situ 模式同样会解转义（"x\\y" -> x\y），快路径不去猜它的
-//     转义表（\uXXXX / 代理对 / 非法转义都有各自的细节），遇到就交回旧路径；
-//   * cleanJson 连字符串里的裸 CR 也删，那是快路径不该自己糊弄的语义差异。
-// 我们真正取用的字符串（键名 / eventType / hitsound / trackDisappearAnimation …）
-// 在真实谱面里从不含转义，所以这条放弃分支实际上不会触发。
-inline const char* scanStringEndExact(const char* p, const char* e) {
-    for (++p; p < e; ++p) {
-        char c = *p;
-        if (c == '\\' || c == '\r') return nullptr;
-        if (c == '"') return p;
-    }
-    return nullptr;
-}
+// 字符串扫描走 core/level/JsonScan.hpp（memchr + 转义回退），语义与逐字节版本相同。
+using jsonscan::scanStringEnd;
+using jsonscan::scanStringEndExact;
 
 // p 指向 '[' 或 '{'；返回配对的闭合符之后的位置。
-inline const char* skipContainer(const char* p, const char* e) {
-    int depth = 0;
-    while (p < e) {
-        char c = *p;
-        if (c == '"') { const char* q = scanStringEnd(p, e); if (!q) return nullptr; p = q + 1; continue; }
-        if (c == '[' || c == '{') ++depth;
-        else if (c == ']' || c == '}') { if (--depth == 0) return p + 1; }
-        ++p;
-    }
-    return nullptr;
-}
+// 实现走 core/level/JsonScan.hpp：整块掩码抹掉字符串里的括号，只对括号做顺序配对。
+// 返回指针与原来的逐字节版本逐字节相同（见该文件开头的说明）。
+using jsonscan::skipContainer;
 
 // 跳过任意一个 JSON 值。不读的值也要挡住明显非法的 token（True / None / +1 / 裸词…）：
 // 那些文件 DOM 会拒绝，快路径不能反而把它放过去。
@@ -305,7 +278,13 @@ inline bool scanRootMembers(const char* s, const char* e, Regions& r,
             continue;
         }
         setFastStage("scanRootMembers/value", (long long)(p - s));
-        const char* vEnd = skipValue(p, e);
+        // angleData 是几十 MB 的数字数组，而这里只需要它的结尾位置：先找第一个
+        // {']', '"', '[', '{'}，没有引号/嵌套时那个 ']' 就是配对的那个（与 skipValue
+        // 返回同一个指针）；出现引号或嵌套容器就整段交回 skipValue。
+        // 数值本身仍由 parseAngleDataRegion 逐位解析，这里一个数都不读。
+        const char* vEnd = (keyIs(key, "angleData") && *p == '[')
+                               ? jsonscan::skipSimpleArrayEnd(p, e)
+                               : skipValue(p, e);
         if (!vEnd) return false;
         // 重复键取第一个（RapidJSON 的 FindMember 也是第一个）
         if (keyIs(key, "angleData")) {
@@ -372,7 +351,7 @@ struct ActionFields {
     float hitsoundVolume = 0.0f, beatsBehind = 0.0f, beatsAhead = 0.0f;
     float offX = 0.0f, offY = 0.0f;
     bool justThisTile = false;
-    std::string hitsound, trackDisappear;
+    std::string hitsound, trackDisappear, trackAnimation;
 
     // ── 以下只给 MoveCamera / RepeatEvents 用（rich 模式才填；热路径一个字段都不碰） ──
     bool hasAngleOffset = false; double angleOffset = 0.0;
@@ -726,7 +705,7 @@ inline bool parseActionObject(const char* p, const char* e, ActionFields& f, boo
                 if (!stringValue(v, vEnd, f.trackDisappear)) return false;
                 f.hasTrackDisappear = true;
             } else if (keyIs(key, "trackAnimation")) {
-                if (*v != '"') return false;
+                if (!stringValue(v, vEnd, f.trackAnimation)) return false;
                 f.hasTrackAnimation = true;
             } else if (rich && keyIs(key, "tag")) {
                 std::string tagTmp;
@@ -902,6 +881,7 @@ inline bool buildAction(const ActionFields& f, LevelData::FastAction& a, bool& k
         a.val2 = f.hasBeatsAhead ? f.beatsAhead : -1.0f;
         if (f.hasTrackDisappear) a.strId = g_internOwner ? g_internOwner->internActionStr(f.trackDisappear) : 0;
         a.flag = f.hasTrackAnimation;
+        if (f.hasTrackAnimation) a.strId2 = g_internOwner ? g_internOwner->internActionStr(f.trackAnimation) : 0;
         break;
     default:
         break;
@@ -1592,6 +1572,10 @@ static void readSettings(const rapidjson::Value& s, LevelData::Settings& out) {
     out.pitch           = getF("pitch", out.pitch);
     out.offset          = getF("offset", out.offset);
     out.countdownTicks  = getI("countdownTicks", out.countdownTicks);
+    if (s.HasMember("separateCountdownTime")) {
+        const auto& v = s["separateCountdownTime"];
+        out.separateCountdownTime = v.IsBool() ? v.GetBool() : (v.IsInt() ? v.GetInt() != 0 : out.separateCountdownTime);
+    }
     out.zoom            = getF("zoom", out.zoom);
     out.rotation        = getF("rotation", out.rotation);
     out.relativeTo      = getS("relativeTo", out.relativeTo);
@@ -1691,6 +1675,7 @@ void LevelData::buildRecolorIndex(const Timeline& timeline) {
         rt.trigger = (double)timeline.startTimeAt(ev.floor) +
                      ((double)ev.angleOffset / 180.0) * rt.beat;
         rt.duration = ev.duration;
+        rt.angleOffset = ev.angleOffset;
         rt.ease = ev.ease;
         rt.order = ev.order;
         rt.cfg = ev.cfg;
@@ -1727,6 +1712,40 @@ void LevelData::buildRecolorIndex(const Timeline& timeline) {
     }
     LOG_D("RecolorTrack: %zu 条事件，块表 %zu 块 / %zu 条目", m_recolorTriggers.size(),
           m_recolorBlocks.size(), total);
+}
+
+std::string LevelData::trackStyleAt(int64_t floor, double timeSec, const Timeline* timeline) const {
+    // 第一步与 baseColorConfig()/baseColorsAt() 同源：settings 默认 + colorEventAt 的静态段。
+    std::string style = settings.trackStyle;
+    if (const ColorEvent* e = colorEventAt(floor))
+        if (!e->cfg.style.empty()) style = e->cfg.style;
+    if (!m_recolorReady || m_recolorBlocks.empty() || floor < 0) return style;
+    const size_t blk = (size_t)floor / kRecolorBlock;
+    if (blk >= m_recolorBlocks.size()) return style;
+    // 第二步与 tileColorsAt 的后半段逐字同构（同样的覆盖/gap/trigger 判据），
+    // 只是取 cfg.style 而不是颜色。timeSec = +inf 就是"最终状态"（静态形状表用的口径）。
+    const RecolorTrigger* last = nullptr;
+    for (uint32_t idx : m_recolorBlocks[blk]) {
+        const RecolorTrigger& e = m_recolorTriggers[idx];
+        if (e.lo > floor || e.hi < floor) continue;
+        if (e.gap > 0 && ((floor - e.lo) % ((int64_t)e.gap + 1)) != 0) continue;
+        if (e.trigger > timeSec + 1e-9) break;   // 列表按 trigger 升序
+        // 事件**自己那一层**还没走到就不算数 —— 否则末尾一条覆盖到前面的 RecolorTrack 会
+        // **追溯**改掉已经过去的砖（The Moon 的 64 条 Minimal 就会把前面已定型的 Neon 改小 0.03）。
+        // 但 angleOffset 是**度**：负值可以提前触发（-99999 ≈ 负 555 拍 = 从开头就生效），
+        // 所以门槛不是"层号 <= 砖号"，而是"这条的提前量够不够跨过这两层"。
+        // 精确判据：该砖自己的起始时刻。**别用"每层 1 拍"去估** —— 一层 = 该砖走过的角度
+        // /180 拍，90° 砖只有半拍、360° 砖是两拍，层号差和拍数根本不成正比（2026-10-18 用户指出）。
+        if (timeline) {
+            if (e.trigger > timeline->startTimeAt(floor) + 1e-9) continue;
+        } else if (e.cfg.startFloor > floor &&
+                   (double)e.angleOffset > -180.0 * (double)(e.cfg.startFloor - floor) - 1e-6) {
+            continue;
+        }
+        last = &e;
+    }
+    if (last && !last->cfg.style.empty()) style = last->cfg.style;
+    return style;
 }
 
 TileColors LevelData::tileColorsAt(int64_t floor, double timeSec, float amplitude,
@@ -2014,7 +2033,12 @@ LevelData::MoveTransform LevelData::moveTransformAt(int64_t floor, double timeSe
         };
         if (e.flags & kMoveOffX) set(px, e.offX);
         if (e.flags & kMoveOffY) set(py, e.offY);
-        if (e.flags & kMoveRot) set(rot, e.rotDeg * 3.14159265358979323846f / 180.0f);
+        // **旋转是绝对角**（Re_ADOJAS `buildTileMoveTrack`：`mesh.rotation.z = rotationOffset`，
+        // 覆盖砖自身的朝向），而我们的几何已经把砖的方向烘进去了 → 增量 = 目标角 − 砖自身方向。
+        // 写成"在自身方向上再转 rotationOffset"会让每块砖保留各自的方向，整张图的相对排布完全不同
+        // （2026-10-21 Plum - R 结尾那一大片散砖就是这么对不上的）。
+        if (e.flags & kMoveRot)
+            set(rot, (e.rotDeg - tileDirectionAt(floor)) * 3.14159265358979323846f / 180.0f);
         if (e.flags & kMoveScale) { set(sx, e.scaleX); set(sy, e.scaleY); }
         if (e.flags & kMoveOpacity) set(op, e.opacity);
     }
@@ -2795,7 +2819,10 @@ bool LevelData::parseLegacy(const std::string& jsonStr, ProgressCb onProgress, b
             } else if (act.type == FastAction::AnimateTrack) {
                 act.val1 = -1.0f; act.val2 = -1.0f; // sentinel: not set
                 if (a.HasMember("trackDisappearAnimation")) act.strId = g_internOwner ? g_internOwner->internActionStr(a["trackDisappearAnimation"].GetString()) : 0;
-                if (a.HasMember("trackAnimation"))  act.flag = true; // flag2: has trackAnimation
+                if (a.HasMember("trackAnimation")) {
+                    act.flag = true;   // flag2: has trackAnimation
+                    act.strId2 = g_internOwner ? g_internOwner->internActionStr(a["trackAnimation"].GetString()) : 0;
+                }
                 if (a.HasMember("beatsBehind")) act.val1 = a["beatsBehind"].GetFloat();
                 if (a.HasMember("beatsAhead"))  act.val2 = a["beatsAhead"].GetFloat();
             }
@@ -3016,11 +3043,16 @@ void LevelData::refreshDerivedCaches() {
             bookmarkFloors.push_back(floor); break;
         case FastAction::AnimateTrack:
             hasAtStates = true;
-            atStates[floor] = {actionStr(a).empty() ? settings.trackDisappearAnimation : actionStr(a),
-                               settings.trackAnimation, // aa not parsed yet; use global
-                               a.val1 >= 0 ? a.val1 : settings.beatsBehind,
-                               a.val2 >= 0 ? a.val2 : settings.beatsAhead,
-                               a.flag};
+            {
+                ATState st;
+                st.hasDA = !actionStr(a).empty();
+                st.da    = actionStr(a);
+                st.hasAA = a.flag && !actionStr2(a).empty();
+                st.aa    = actionStr2(a);
+                st.bb    = a.val1;   // <0 = 事件没写
+                st.ba    = a.val2;
+                atStates[floor] = std::move(st);
+            }
             break;
         default: break;
         }

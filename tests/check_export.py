@@ -58,7 +58,7 @@ def run(args):
 # ─────────────────────────── 独立建模投影 ───────────────────────────
 # 这一节是"库建模了什么"的**第二份表述**。改动它请同时改 src/adofai/export/LevelJsonWriter.cpp。
 
-# settings 的 28 个建模字段与默认值（默认值取解析器的默认，用于"键缺席"的情形）。
+# settings 的 29 个建模字段与默认值（默认值取解析器的默认，用于"键缺席"的情形）。
 SETTINGS_DEFAULTS = {
     "version": 15,
     # 模型字段叫 `songFilename`，`.adofai` 里的键是 `song`（解析器还接受 `songFilename` 当回退，
@@ -84,6 +84,7 @@ SETTINGS_DEFAULTS = {
     "trackGlowIntensity": 100.0,
     "pitch": 100.0,
     "legacyCamRelativeTo": False,
+    "separateCountdownTime": False,   # 2026-10-21：决定时间基准
     "backgroundColor": "000000",
     "stickToFloors": True,
     "planetEase": "Linear",

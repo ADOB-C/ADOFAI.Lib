@@ -34,6 +34,10 @@ public:
     // Precalculated timing arrays (size = n tiles including extra)
     const std::vector<double>& tileStartTimes() const { return m_tileStartTimes; }
     float durationAt(int64_t i) const;
+    // 与 `durationAt(i)` **逐位相同**，只是 `totalAngleAt(i)` 的值由调用方传进来。
+    // 给"一次取、两处用"的热路径用（拖尾的逐采样点循环已经算过 totalAngle；
+    // 再调 `durationAt` 会把它内部那次 `totalAngleAt(i)` 重算一遍 —— 极密谱里是重复的大头）。
+    float durationFromTotalAngle(int64_t i, float totalAngle) const;
     float startAngleAt(int64_t i) const;
     float totalAngleAt(int64_t i) const;
 
@@ -89,6 +93,25 @@ public:
     bool dropStartTimesArray();
     double disappearTimeAt(int64_t i) const;
     double appearTimeAt(int64_t i) const;
+
+    // ---- AnimateTrack 的逐砖动画（对齐 Re_ADOJAS TimelineManager.buildAppear/DisappearKeyframes）----
+    // 0 = None；appear 1=Extend 2=Assemble 3=Assemble_Far 4=Grow 5=Grow_Spin 6=Fade? 见 .cpp 的 animId()
+    // 这里给出"该砖在 time 时刻的动画增量"，由 LevelScene 折进逐砖变换/透明度。
+    struct AnimSample {
+        float posX = 0, posY = 0;   // 世界坐标增量（砖单位）
+        float rot = 0;              // 旋转增量（弧度）
+        float scaleX = 1, scaleY = 1;
+        float alpha = 1;            // 透明度乘数
+    };
+    bool animAt(int64_t i, double time, AnimSample& out) const;
+
+    // 逐砖动画窗口（Phase 5 已按 Re_ADOJAS 规则算好）：TileAnimation 用它们建关键帧。
+    const std::vector<uint8_t>& animAppearType() const { return m_animAppearType; }
+    const std::vector<uint8_t>& animDisappearType() const { return m_animDisappearType; }
+    const std::vector<double>& animAppearStart() const { return m_animAppearStart; }
+    const std::vector<double>& animAppearEnd() const { return m_animAppearEnd; }
+    const std::vector<double>& animDisappearStart() const { return m_animDisappearStart; }
+    const std::vector<double>& animDisappearEnd() const { return m_animDisappearEnd; }
     // 丢掉两支密集 double（只有 blocksRecomputable() 时才允许；丢之前先建粗索引）
     bool dropTrackVisArrays();
     // **仅测试用**：给"按块重算"做反面对照 —— 直接把某一层的 BPM 改掉（时长随之变，
@@ -143,6 +166,10 @@ private:
     std::vector<double> m_tileStartTimes;
     std::vector<double> m_tileDisappearTimes;
     std::vector<double> m_tileAppearTimes;
+    // 逐砖动画：类型（0=None）+ 起止时刻（秒）。只在 needsTrackVis 且非"超大谱全局动画"时分配。
+    std::vector<uint8_t> m_animAppearType, m_animDisappearType;
+    std::vector<double> m_animAppearStart, m_animAppearEnd;
+    std::vector<double> m_animDisappearStart, m_animDisappearEnd;
     std::vector<std::pair<int64_t, float>> m_pauseRot;
     float angleDirBefore(int64_t i) const;
     float extraRotAt(int64_t i) const;

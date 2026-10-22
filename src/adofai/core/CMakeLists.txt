@@ -16,6 +16,10 @@ add_library(adofai_core STATIC
     level/FloorWindow.cpp
     level/LevelPath.cpp
     timeline/Timeline.cpp
+    # 关键帧轨道（逐砖动画的通用求值）与"逐砖时间轴"（MoveTrack/TileAnimation 的消费方）。
+    # 两个都只要 LevelData/Timeline，纯计算。
+    timeline/Keyframes.cpp
+    timeline/TileAnimation.cpp
     timeline/PositionSolver.cpp
     timeline/PlaybackClock.cpp
     util/AssetPaths.cpp
