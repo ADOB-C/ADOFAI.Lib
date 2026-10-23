@@ -13,8 +13,11 @@ ADOCAO_COMMIT_DATE=2026-10-22
 #  1. **`.adocao` 升到 v7**：自描述的 `EventSchema` + `EventColumns`（+ EventIndex、事件窗口、
 #     "直接解码"不经 JSON）。v6 会整体丢的类型（装饰物 / 未知 eventType）现在能无损存进容器。
 #     archive 新增 AdocaoKinds / AdocaoSchema / AdocaoEventColumns 四个源文件。
-#  2. **上游终于有了自己的"写方"**：`archive/AdocaoJsonWriter`（`writeLevelJson`）——
-#     `.adocao`(v7) → `.adofai` 的**无损**回写（按 schema 吐出原始事件 JSON + rawSettingsJson）。
+#  2. **上游加了一个"调试用"的回写工具**：`archive/AdocaoJsonWriter`（`writeLevelJson`）——
+#     `.adocao`(v7) → `.adofai` 的无损回写（按 schema 吐出原始事件 JSON + rawSettingsJson）。
+#     它**不是导出功能**：上游把一级命令 `adocao json` 主动降级成了 `adocao debug json`
+#     （commit 8407089），docs/cli.md 明写"它不是导出功能，也不把 .adofai 回写当产品能力"；
+#     用途是验证容器无损（容器→明文→重打包→与原谱逐字节相同），且只对 `pack --v7-all` 完整。
 #     这与库自有的 `ADOFAI::export` 重叠但不相同：上游要求带 v7 段、只出明文；库能接受任意
 #     来源的 LevelData、出四种格式。库这边**分层**：有 v7 段就优先用上游的（无损），否则用
 #     自己的写方。`canExport` 同理 —— 有 v7 段时连 ScaleRadius 都能写。

@@ -7,9 +7,10 @@
 `ADOFAI.Lib` —— 从 ADOCAO（本体，`../ADOCAO`）**单向镜像**出来的可分发包：
 解析 `.adofai` → 时间线/解算 → 打拍音 → 可选渲染 → 可选导出。6 个模块（core / archive /
 **export** / audio / audio_device / render），其中 render 与 audio_device 默认 OFF，
-export 是**库自有**的。注意 2026-10-22 之后上游也有了 `archive/AdocaoJsonWriter`（`.adocao`
-v7 → `.adofai` 的**无损**回写，依赖自描述事件段）；库的导出模块因此分两层：
-有 v7 段时**优先用它**（无损），否则用库自己的写方（按建模字段写，覆盖任意来源的 LevelData）。
+export 是**库自有**的。2026-10-22 之后上游也有了 `archive/AdocaoJsonWriter`，但那是它自己的
+**调试工具** `adocao debug json`（容器无损验证，非导出功能，只接受 `pack --v7-all` 的包）的实现。
+库的导出模块因此分两层：有 v7 段时**借用它**（输出无损），否则用库自己的写方（按建模字段写，
+覆盖任意来源的 LevelData）。
 
 ## 三条硬规矩
 
@@ -18,9 +19,9 @@ v7 → `.adofai` 的**无损**回写，依赖自描述事件段）；库的导�
    库自己的文件是：`CMakeLists.txt`、`src/**/CMakeLists.txt`、`cmake/*.cmake*`、
    `examples/**`、`tests/check_*.py`、`tests/data/**`、文档、`.github/**`，
    以及**唯一的例外 `src/adofai/export/**`** ——
-   那是库自有的导出模块（上游只有一个"从 v7 容器无损回写"的写方，没有"任意来源 → 四种格式"
-   的导出；库自己的写方仍无上游对应物，靠 `ctest -R export` 守漂移；细节见
-   [CONTRIBUTING.md](CONTRIBUTING.md) §2）。
+   那是库自有的导出模块（上游的 `AdocaoJsonWriter` 只是它 `debug json` 验证工具的实现，
+   **明确不是导出功能**；库需要的是"任意来源 → 四种格式"，仍无上游对应物，靠
+   `ctest -R export` 守漂移；细节见 [CONTRIBUTING.md](CONTRIBUTING.md) §2）。
 2. **入库文件里绝不出现机器绝对路径**（ADOCAO 为此重写过 352 个提交的历史）。
    本机资源走环境变量或 `~/` 相对形式。提交前自检（应为空）：
    ```bash

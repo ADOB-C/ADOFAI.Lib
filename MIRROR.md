@@ -294,13 +294,18 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 `#if defined(_MSC_VER)` 的 `_BitScanForward` 分支（4 行），向量后端继续只认 GCC/Clang。
 其余部分（`_M_X64` 的 SSE2 分支）确实可以不保留 —— 那只是"MSVC 上少了向量加速"，不致命。
 
-### 第八次对齐（85ca708，32 个提交）：上游终于有了自己的"写方"
+### 第八次对齐（85ca708，32 个提交）：上游有了一个"调试用"的回写工具
 
 `.adocao` 升到 **v7**：自描述的 `EventSchema` + `EventColumns`（外加 EventIndex / 事件窗口 /
 直接解码），于是 v6 会整体丢的类型（装饰物、未知 eventType）也能无损存进容器。配套新增
 `archive/AdocaoJsonWriter`：`writeLevelJson(lv, out, err)` —— **`.adocao`(v7) → `.adofai` 的无损回写**。
 
-这跟库自有的 `ADOFAI::export` 是**两个东西**，但也确实重叠了：
+**它不是导出功能。** 上游把一级命令 `adocao json` 主动**降级**成了 `adocao debug json`
+（commit `8407089`），并在 `docs/cli.md` 里写明："放在 `debug` 下面是有意的：它不是导出功能
+（我们不做 `.ilytx` 导出，也不把 `.adofai` 回写当产品能力）"。它的用途是验证容器无损：
+"容器 → 明文 → 重新打包 → 与原谱逐字节相同"，而且**只对 `pack --v7-all` 的包**完整。
+
+所以"ADOCAO 刻意不做导出"这句仍然成立。它跟库自有的 `ADOFAI::export` 是**两个东西**：
 
 | | 上游 `AdocaoJsonWriter` | 库 `ADOFAI::export` |
 |---|---|---|
@@ -309,7 +314,8 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 | 输出 | 只有明文 JSON | `.adofai` / `.xz` / `.zst` / `.adocao` |
 
 库这边的处理是**分层**而不是二选一：`writeTo()` 发现 `v7SchemaBytes`/`v7ColumnsBytes` 非空
-就用上游的写方（无损），否则用库自己的。`canExport()` 同理 —— 有 v7 段时连 ScaleRadius 都能写
+就借上游那个函数（输出无损），否则用库自己的。借它是为了"有全部原始字段时别退化成建模子集"，
+不代表上游提供了导出能力。`canExport()` 同理 —— 有 v7 段时连 ScaleRadius 都能写
 （它本来就在原始事件里），没有 v7 段时才因为"上游没留原始事件"拒绝。
 
 实测（`ctest export_roundtrip` 新增一段）：`preserveRawJson = true` 读谱 →
