@@ -172,14 +172,14 @@ if (!adofai::exporter::exportLevel(level, "out.adocao", err, adofai::exporter::O
 * **未知 `eventType` 的 action 会没有** —— 两条解析路径在**读入时**就丢弃它们，不是导出丢的；
 * 未建模的 settings 键、`decorations`、注释、键序、数字字面量的写法（`1e2` 与 `100`）都不保留；
 * `pathData` 型的谱面导出后会**同时**带一份 `angleData`（保真优先于体积；要体积就用 `.adocao`）；
-* **带 v7 事件段的 `.adocao` 可以"无损回写"成 `.adofai`**：这时导出会走上游
-  `adocao::writeLevelJson` —— 它按 schema 把**原始事件 JSON** 原样吐回来，连装饰物、未知
-  `eventType`、以及 settings 里我们没建模的键都不丢（实测 `"settings": {"bpm": 150}` 原样保留，
-  不会被补成 29 个建模键）。要用这条，读谱前 `level.preserveRawJson = true`、打包时
+* **带 v7 事件段的 `.adocao` 可以"无损回写"成 `.adofai`**：这时导出走库自己的
+  `exporter::writeV7Json`（`src/adofai/export/LevelV7Json.cpp`）—— 按 schema 把**原始事件 JSON**
+  原样吐回来，连装饰物、未知 `eventType`、以及 settings 里我们没建模的键都不丢
+  （实测 `"settings": {"bpm": 150}` 原样保留，不会被补成 29 个建模键）。要用这条，读谱前
+  `level.preserveRawJson = true`、打包时
   `PackOptions{withV7Events=true, v7IncludeLegacy=true}`。
-  顺带说明：上游**不提供导出功能**，那个函数是它自己的 `adocao debug json`（容器无损验证工具，
-  只接受 `pack --v7-all` 的包）的实现。本库借用它是为了"有 v7 段时输出无损"，不是把上游的
-  调试工具当产品能力。
+  这份实现是**库自有的**：上游把它自己的同名能力当成测试工具（先降级成 `adocao debug json`、
+  再挪进 `tests/`），**不提供导出功能**，所以库不依赖它。
 * **五类"富事件"也能写回去了**：MoveCamera / RepeatEvents / ColorTrack+RecolorTrack / Flash /
   MoveTrack 在 2026-10-18 起搬进了富结构（`cameraEvents` 等），导出模块按各自 `order` 把它们
   写回 `actions` —— 字段级逐位往返（含 ease 名字、relativeTo、disabled/flags、`"Start+3"` 这种

@@ -11,6 +11,8 @@ add_library(adofai_export STATIC
     LevelJsonWriter.cpp
     # xz / zstd 整帧编码（头里无三方类型，照 archive/LevelArchive.hpp 的口径）
     LevelEncode.cpp
+    # `.adocao`(v7) → `.adofai` 的**无损**回写（库自有实现；上游那份只作它自己的测试工具）
+    LevelV7Json.cpp
     # 格式枚举 + 调度 + 原子落盘
     LevelExport.cpp)
 

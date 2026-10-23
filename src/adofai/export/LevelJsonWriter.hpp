@@ -46,6 +46,10 @@ bool writeJson(const LevelData& level, std::string& out, std::string& err);
 // 绝不静默写出一个少了事件的文件。
 bool canExport(const LevelData& level, std::string* why = nullptr);
 
+// 只把 `settings` 写成一个 JSON 对象（不带外层 `{}` 之外的任何键）。
+// 给 v7 无损回写用：那条路有 `rawSettingsJson` 时原样输出，没有时就退回这个（建模的 29 个键）。
+bool writeSettingsObject(const LevelData& level, std::string& out, std::string& err);
+
 // "库建模字段"的指纹（FNV-1a-64，逐字段按位喂字节）：
 // settings 全体 + angleData + pathData + 每个 action 的 6 列（字符串按**解出来的内容**算，
 // 不按池下标 —— 池的形状不是建模内容，理由写在 LevelJsonWriter.cpp 的 modelDigest 里）。

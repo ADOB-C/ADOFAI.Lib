@@ -555,14 +555,29 @@ bool writeJson(const LevelData& level, std::string& out, std::string& err)
     return false;
 }
 
+bool writeSettingsObject(const LevelData& level, std::string& out, std::string& err)
+{
+    out.clear();
+    err.clear();
+    rapidjson::StringBuffer buf;
+    Writer w(buf);
+    if (!putSettings(w, level.settings, err)) return false;
+    if (!w.IsComplete()) {
+        if (err.empty()) err = "settings 写出未完成";
+        return false;
+    }
+    out.assign(buf.GetString(), buf.GetSize());
+    return true;
+}
+
 bool canExport(const LevelData& level, std::string* why)
 {
     // `.adofai` 的 actions 里只有 7 种经典事件；2026-10-18 上游把相机/砖色/闪屏/轨道动画/重复
     // 这五类搬进了**富结构**（`cameraEvents` 等），ScaleRadius 更是只被烘进 tile 位置、
     // 原始事件都没留。这些**没有** JSON 表示 —— 写 `.adofai` 就会静默丢掉它们。
-    // 有 **v7 事件段**时，上游的 `adocao::writeLevelJson` 能按 schema 把原始事件 JSON 原样吐
-    // 出来（含 decorations、未知 eventType，以及 rawSettingsJson 里那些我们没建模的键）——
-    // 那条路是无损的，所以这时**什么都写得出来**（ScaleRadius 也不例外，它就在原始事件里）。
+    // 有 **v7 事件段**时，导出会走本库的 `writeV7Json`（`LevelV7Json.cpp`）：按 schema 把原始
+    // 事件 JSON 原样吐出来（含 decorations、未知 eventType、以及 rawSettingsJson 里那些我们
+    // 没建模的键）—— 那条路是无损的，所以这时**什么都写得出来**（ScaleRadius 也不例外）。
     if (!level.v7SchemaBytes.empty() && !level.v7ColumnsBytes.empty()) return true;
 
     // 否则（模型里只剩建模字段）就只剩 **ScaleRadius** 写不出来：上游解析它时就把结果烘进了

@@ -45,9 +45,10 @@ ADOCAO 是**天天改**的那一个。若本体依赖本库，每次改本体都
 
 `ADOFAI::export`（写 `.adofai` / `.adofai.xz` / `.adofai.zst` / `.adocao`）是**库自己加的**：
 ADOCAO 本体的 `--export` 是打拍音 WAV，**没有**"任意来源 → 四种格式"的导出。
-（2026-10-22 起上游有了 `archive/AdocaoJsonWriter`，但它**明确不是导出功能**：那是
-`adocao debug json` 这个**容器无损验证工具**的实现，只接受 `pack --v7-all` 的包。库的导出模块
-在有 v7 段时借它输出无损，否则用自己的写方。）为什么不让本体当它的家见上文的"为什么不让本体当消费者"——反过来同样成立：
+（上游**不提供导出功能**。它自己那份 `.adocao` → `.adofai` 回写是**测试工具**：先降级成
+`adocao debug json`，2026-10-22 又从 `archive/` 挪进了 `tests/`。库因此在
+`src/adofai/export/LevelV7Json.cpp` 里**自己实现**了一份无损回写，有 v7 段时用它，
+否则用建模写方。）为什么不让本体当它的家见上文的"为什么不让本体当消费者"——反过来同样成立：
 **本体不需要它**，塞进主源就是给主源加一个没人用的功能。
 
 它待在 `src/adofai/` 下只是为了 include 根一致（源码树 `src/adofai/export/X` ⇔

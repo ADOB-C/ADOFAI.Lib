@@ -7,10 +7,10 @@
 `ADOFAI.Lib` —— 从 ADOCAO（本体，`../ADOCAO`）**单向镜像**出来的可分发包：
 解析 `.adofai` → 时间线/解算 → 打拍音 → 可选渲染 → 可选导出。6 个模块（core / archive /
 **export** / audio / audio_device / render），其中 render 与 audio_device 默认 OFF，
-export 是**库自有**的。2026-10-22 之后上游也有了 `archive/AdocaoJsonWriter`，但那是它自己的
-**调试工具** `adocao debug json`（容器无损验证，非导出功能，只接受 `pack --v7-all` 的包）的实现。
-库的导出模块因此分两层：有 v7 段时**借用它**（输出无损），否则用库自己的写方（按建模字段写，
-覆盖任意来源的 LevelData）。
+export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::writeV7Json`（库自己实现的
+**无损**回写，`src/adofai/export/LevelV7Json.cpp`），否则走建模写方（按 29 个 settings + 事件
+字段写，覆盖任意来源的 LevelData）。上游**不提供导出功能**：它自己那份同名能力是测试工具
+（先降级成 `adocao debug json`、2026-10-22 又从 `archive/` 挪进了 `tests/`），库不依赖它。
 
 ## 三条硬规矩
 

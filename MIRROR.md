@@ -301,11 +301,20 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 `archive/AdocaoJsonWriter`：`writeLevelJson(lv, out, err)` —— **`.adocao`(v7) → `.adofai` 的无损回写**。
 
 **它不是导出功能。** 上游把一级命令 `adocao json` 主动**降级**成了 `adocao debug json`
-（commit `8407089`），并在 `docs/cli.md` 里写明："放在 `debug` 下面是有意的：它不是导出功能
-（我们不做 `.ilytx` 导出，也不把 `.adofai` 回写当产品能力）"。它的用途是验证容器无损：
-"容器 → 明文 → 重新打包 → 与原谱逐字节相同"，而且**只对 `pack --v7-all` 的包**完整。
+（commit `8407089`），`docs/cli.md` 写明"它不是导出功能（我们不做 `.ilytx` 导出，也不把
+`.adofai` 回写当产品能力）"；随后（2026-10-22，工作区里进行中）又把它**从 `archive/` 挪进了
+`tests/`** —— 只作它自己的容器往返验证。所以"ADOCAO 刻意不做导出"这句仍然成立。
 
-所以"ADOCAO 刻意不做导出"这句仍然成立。它跟库自有的 `ADOFAI::export` 是**两个东西**：
+库因此**自己实现了一份**：`src/adofai/export/LevelV7Json.cpp` 的 `exporter::writeV7Json`。
+算法与上游那份同源（Schema → EventColumns → 原始事件 JSON → 按 `source` 分回 actions/decorations），
+但住在本库里、不依赖一个上游随时会搬走的符号。两处改进：角度走 `angleCount()/angleAt()`
+（压缩过角度也写得出来）；settings 缺 `rawSettingsJson` 时退回建模写方（复用 `writeSettingsObject`，
+不再抄一遍 29 个键）。
+
+`archive/AdocaoJsonWriter.cpp` 已**从库的构建里摘掉**（文件还在镜像树里，等上游提交那次移动后
+`rsync --delete` 会删除它）—— 这样配置期不会因为"找不到源文件"报错。
+
+它跟库自有的 `ADOFAI::export` 是**两个东西**：
 
 | | 上游 `AdocaoJsonWriter` | 库 `ADOFAI::export` |
 |---|---|---|
@@ -314,8 +323,8 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 | 输出 | 只有明文 JSON | `.adofai` / `.xz` / `.zst` / `.adocao` |
 
 库这边的处理是**分层**而不是二选一：`writeTo()` 发现 `v7SchemaBytes`/`v7ColumnsBytes` 非空
-就借上游那个函数（输出无损），否则用库自己的。借它是为了"有全部原始字段时别退化成建模子集"，
-不代表上游提供了导出能力。`canExport()` 同理 —— 有 v7 段时连 ScaleRadius 都能写
+就走 `writeV7Json`（库自己的无损实现），否则走建模写方 —— 目的是"有全部原始字段时别退化成
+建模子集"。上游既不提供导出能力、也不提供这个函数（它已经搬去 `tests/` 了）。`canExport()` 同理 —— 有 v7 段时连 ScaleRadius 都能写
 （它本来就在原始事件里），没有 v7 段时才因为"上游没留原始事件"拒绝。
 
 实测（`ctest export_roundtrip` 新增一段）：`preserveRawJson = true` 读谱 →
