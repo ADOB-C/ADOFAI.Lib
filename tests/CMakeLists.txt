@@ -159,6 +159,25 @@ if(ADOFAI_LIB_ENABLE_ARCHIVE)
     target_link_libraries(adofai_adocao_window_test PRIVATE ADOFAI::archive)
     add_test(NAME adocao_window COMMAND adofai_adocao_window_test)
 
+    # v7 事件库那一套（2026-10-22）：Kinds → Schema → EventColumns 三层各自的单元测试，
+    # 加一个容器级往返与一个**语料回归**（17 张谱 pack→unpack 逐字段对拍）。
+    add_executable(adofai_adocao_schema_test adocao_schema_test.cpp)
+    target_link_libraries(adofai_adocao_schema_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_schema COMMAND adofai_adocao_schema_test)
+
+    add_executable(adofai_adocao_event_columns_test adocao_event_columns_test.cpp)
+    target_link_libraries(adofai_adocao_event_columns_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_event_columns COMMAND adofai_adocao_event_columns_test)
+
+    add_executable(adofai_adocao_v7_container_test adocao_v7_container_test.cpp)
+    target_link_libraries(adofai_adocao_v7_container_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_v7_container COMMAND adofai_adocao_v7_container_test)
+
+    add_executable(adofai_adocao_v7_corpus_test adocao_v7_corpus_test.cpp)
+    target_link_libraries(adofai_adocao_v7_corpus_test PRIVATE ADOFAI::archive)
+    add_test(NAME adocao_v7_corpus
+        COMMAND adofai_adocao_v7_corpus_test "${CMAKE_CURRENT_SOURCE_DIR}/charts")
+
     # `.ilytx`（Re_ADOJAS 自研容器 xz(tar(ilybin))）：与参照谱逐位等价 + 紧凑模式的 f32 误差
     # + 三个坏样本必须干净失败。样本是上游用**他们的编码器**生成的（tests/gen_ilytx_fixtures.mjs）。
     add_executable(adofai_ilytx_test ilytx_test.cpp)
@@ -233,6 +252,11 @@ add_test(NAME camera_timeline COMMAND adofai_camera_timeline_test)
 add_executable(adofai_camera_test camera_test.cpp)
 target_link_libraries(adofai_camera_test PRIVATE ADOFAI::core)
 add_test(NAME camera COMMAND adofai_camera_test)
+
+# 事件字段的"直灌"路径（列 → EventFieldValue → ingestEventFields，不经 JSON）。只链 core。
+add_executable(adofai_adocao_direct_fields_test adocao_direct_fields_test.cpp)
+target_link_libraries(adofai_adocao_direct_fields_test PRIVATE ADOFAI::core)
+add_test(NAME adocao_direct_fields COMMAND adofai_adocao_direct_fields_test)
 
 # 关键帧 / 逐砖时间轴 / 时间原点的三条（2026-10-21 上游新增，都只链 core）。
 # `time_origin` 盯的是 `separateCountdownTime` 决定的**时间基准**：它一旦错，整条时间线

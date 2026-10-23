@@ -18,6 +18,9 @@
 #include <chrono>
 #include <iterator>
 #include "core/util/CountLimits.hpp"
+#include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
 #include "core/util/Easing.hpp"
 
 
@@ -1748,7 +1751,8 @@ std::string LevelData::trackStyleAt(int64_t floor, double timeSec, const Timelin
     return style;
 }
 
-int64_t LevelData::trackStyleRunEnd(int64_t floor, double timeSec, const Timeline* timeline) const {
+LevelData::StyleRun LevelData::trackStyleRunEnd(int64_t floor, double timeSec,
+                                                const Timeline* timeline) const {
     constexpr int64_t kNever = std::numeric_limits<int64_t>::max();
     (void)timeSec;
     (void)timeline;   // 见下面第 3) 条：块内有触发时本函数不猜，直接不做重用
@@ -1766,13 +1770,15 @@ int64_t LevelData::trackStyleRunEnd(int64_t floor, double timeSec, const Timelin
         if (lb != ub) next = floor + 1;
         else if (ub != colorEvents.end()) next = (int64_t)ub->floor;
     }
-    if (floor < 0 || !m_recolorReady || m_recolorBlocks.empty()) return next;
+    StyleRun run;
+    run.end = next;
+    if (floor < 0 || !m_recolorReady || m_recolorBlocks.empty()) return run;
     const size_t blk = (size_t)floor / kRecolorBlock;
-    if (blk >= m_recolorBlocks.size()) return next;
+    if (blk >= m_recolorBlocks.size()) return run;
 
     // 2) 换块：trackStyleAt 只读当前块的触发列表，块号一变换的就是整张表。
     const int64_t blkEnd = (int64_t)(blk + 1) * (int64_t)kRecolorBlock;
-    if (blkEnd < next) next = blkEnd;
+    if (blkEnd < next) { next = blkEnd; run.end = next; }
 
     // 3) 块里有 RecolorTrack 触发：样式还取决于 `e.trigger` 与 `startTimeAt(floor)` 的比较
     //    （以及 lo/hi/gap）。lo/hi/gap 是精确的整数边界，但**层起始时刻不保证随层号单调** ——
@@ -1782,8 +1788,9 @@ int64_t LevelData::trackStyleRunEnd(int64_t floor, double timeSec, const Timelin
     //    逐砖查询（与改造前完全一样），**不会**再进这个函数 —— 否则每砖两次查询，有触发的
     //    谱反而变慢（实测 2026：56 → 70 ns/砖）。
     //    代价：RecolorTrack 覆盖的块没有收益；收益落在"没有触发的块"（实谱里绝大多数）。
-    if (!m_recolorBlocks[blk].empty()) return -blkEnd;
-    return next;
+    if (!m_recolorBlocks[blk].empty()) return StyleRun{blkEnd, false};
+    run.end = next;
+    return run;
 }
 
 TileColors LevelData::tileColorsAt(int64_t floor, double timeSec, float amplitude,
@@ -2199,6 +2206,85 @@ static std::vector<double> parseAngleDataFast(const char* json, size_t len, size
 
 // 可移植读法（测试 / 嵌入方用）。app 走 FileMap + loadFromBuffer：1.5 GB 的谱
 // 用 ifstream 复制一份要多花 ~250 ms 和 1.5 GB 常驻内存，mmap 没有这份副本。
+// v7：pack 期把 actions/decorations 的原始 JSON 切片留下来（RapidJSON，一次，CLI 用）。
+// 不做任何数值转换 —— 容器侧直接从这些切片建 schema/列，保证"值一个都不丢"。
+bool LevelData::ingestEventJson(const char* begin, const char* end, std::string& err) {
+    err.clear();
+    const char* p = skipWs(begin, end);
+    if (p >= end || *p != '{') { err = "事件不是 JSON 对象"; return false; }
+    const char* objEnd = skipContainer(p, end);
+    if (!objEnd) { err = "事件对象截断"; return false; }
+    ActionFields f;
+    g_failPos = p;
+    if (!parseActionObject(p + 1, objEnd, f)) {
+        err = std::string("事件字段解析失败: ") + std::string(p, std::min<size_t>(160, (size_t)(objEnd - p)));
+        return false;
+    }
+    FastAction a;
+    bool keep = false;
+    g_failPos = p;
+    if (!buildAction(f, a, keep)) { err = "事件路由失败"; return false; }
+    if (keep) { actions.push_back(std::move(a)); return true; }
+    if (f.type == FastAction::MoveCamera || f.type == FastAction::RepeatEvents ||
+        f.type == FastAction::ColorTrack || f.type == FastAction::RecolorTrack ||
+        f.type == FastAction::Flash || f.type == FastAction::MoveTrack) {
+        CameraSink sink;
+        ActionFields rich;
+        if (!parseActionObject(p + 1, objEnd, rich, /*rich=*/true)) { err = "富事件字段解析失败"; return false; }
+        decodeSpecialEvent(rich, sink);
+        for (auto& e : sink.moves) moveTrackEvents.push_back(std::move(e));
+        for (auto& e : sink.cameras) cameraEvents.push_back(std::move(e));
+        for (auto& e : sink.repeats) repeatEvents.push_back(std::move(e));
+        for (auto& e : sink.colors) colorEvents.push_back(std::move(e));
+        for (auto& e : sink.flashes) flashEvents.push_back(std::move(e));
+    }
+    return true;   // 其余类型（MoveDecorations / SetFilter …）暂时不进 LevelData，与 JSON 路径一致
+}
+
+bool LevelData::captureRawMembers(const char* data, size_t length) {
+    rawActionsJson.clear();
+    rawDecorationsJson.clear();
+    rawSettingsJson.clear();
+    if (!data || length == 0) return false;
+    // **先过 cleanJson**：ADOFAI 谱面里广泛存在重复逗号/缺逗号（重特效谱尤其常见，
+    // 如 PLUM_MEGAMIX_2 的 `"requiredMods": [],,`），RapidJSON 会直接拒绝。
+    // 注意：cleanJson 是逐字符复现旧编辑器的容错行为，快路径与它必须等价（见 JsonCleaner.hpp）。
+    std::string cleaned;
+    rapidjson::Document d;
+    d.Parse<rapidjson::kParseTrailingCommasFlag | rapidjson::kParseCommentsFlag>(data, length);
+    if (d.HasParseError()) {
+        cleaned = cleanJson(std::string(data, length));
+        d.Parse<rapidjson::kParseTrailingCommasFlag | rapidjson::kParseCommentsFlag>(cleaned.data(),
+                                                                                    cleaned.size());
+    }
+    if (d.HasParseError() || !d.IsObject()) return false;
+    auto ai = d.FindMember("actions");
+    if (ai != d.MemberEnd() && ai->value.IsArray()) {
+        rawActionsJson.reserve(ai->value.Size());
+        for (const auto& v : ai->value.GetArray()) {
+            rapidjson::StringBuffer buf;
+            rapidjson::Writer<rapidjson::StringBuffer> w(buf);
+            if (!v.Accept(w)) return false;
+            rawActionsJson.emplace_back(buf.GetString(), buf.GetSize());
+        }
+    }
+    auto si = d.FindMember("settings");
+    if (si != d.MemberEnd() && si->value.IsObject()) {
+        rapidjson::StringBuffer buf;
+        rapidjson::Writer<rapidjson::StringBuffer> w(buf);
+        if (!si->value.Accept(w)) return false;
+        rawSettingsJson.assign(buf.GetString(), buf.GetSize());
+    }
+    auto di = d.FindMember("decorations");
+    if (di != d.MemberEnd() && di->value.IsArray()) {
+        rapidjson::StringBuffer buf;
+        rapidjson::Writer<rapidjson::StringBuffer> w(buf);
+        if (!di->value.Accept(w)) return false;
+        rawDecorationsJson.assign(buf.GetString(), buf.GetSize());
+    }
+    return true;
+}
+
 bool LevelData::loadFromFile(const std::string& filepath, ProgressCb onProgress, bool exportOnly) {
     if (onProgress) onProgress(0.05f, "Reading file...");
     std::ifstream file(filepath, std::ios::binary);
@@ -2223,6 +2309,23 @@ bool LevelData::loadFromString(const std::string& jsonStr, ProgressCb onProgress
 }
 
 bool LevelData::loadFromBuffer(const char* data, size_t len, ProgressCb onProgress, bool exportOnly) {
+    const bool ok = loadFromBufferImpl(data, len, onProgress, exportOnly);
+    if (ok && preserveRawJson) {
+        // 只在明文 JSON 上捕获（压缩容器解压后的缓冲在 impl 作用域里，这里拿不到）；
+        // 需要从 .xz/.zst 打包时先转明文，v7 的 Preserved 覆盖率统计会显示 0。
+        if (sniffLevelArchive(data, len) == LevelArchiveKind::Plain) {
+            const char* p = data;
+            size_t n = len;
+            if (n >= 3 && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB &&
+                (unsigned char)p[2] == 0xBF) { p += 3; n -= 3; }
+            if (!captureRawMembers(p, n))
+                LOG_W("preserveRawJson: 原始成员捕获失败（JSON 解析不了），pack 将退回旧段");
+        }
+    }
+    return ok;
+}
+
+bool LevelData::loadFromBufferImpl(const char* data, size_t len, ProgressCb onProgress, bool exportOnly) {
     // **幂等**：同一个对象加载两次必须与"新建一个再加载"等价。以前只清了驻留表，于是
     // `actions` 会被追加（两条路都是 `if (actions.empty()) … else insert(...)`）而
     // `angleData` 是替换 —— 结果是"角度新的、事件两份"。现在先回到刚构造的状态。
@@ -2230,8 +2333,15 @@ bool LevelData::loadFromBuffer(const char* data, size_t len, ProgressCb onProgre
     // （CLI 预置颜色、向导的配置），必须留着（见 parseLegacy / 窗口路径里的沿用逻辑）。
     {
         Settings keep = settings;
+        const bool keepPreserve = preserveRawJson;
+        const bool keepWin = hasEventWindow;          // 事件窗口同样属于"调用方给的条件"
+        const int64_t keepLo = eventWindowLo, keepHi = eventWindowHi;
         *this = LevelData{};
         settings = keep;
+        preserveRawJson = keepPreserve;
+        hasEventWindow = keepWin;
+        eventWindowLo = keepLo;
+        eventWindowHi = keepHi;
     }
     g_internOwner = this;                                  // 事件字符串驻留表归本次加载所有
     actionStrTable.resize(1);                              // id 0 = 空串
@@ -3304,6 +3414,178 @@ void LevelData::convertPathToAngles() {
     for (char c : pathData) {
         angleData.push_back(pathCharToAngle(c));
     }
+}
+
+}  // namespace adofai
+
+namespace adofai {
+
+// ── v7：不经 JSON 的字段直灌（容器用）─────────────────────────────────────────
+// 与 `parseActionObject` 的映射**逐条对应**；改动这里必须同时改那边（对拍用例见
+// tests/adocao_v7_container_test.cpp 的"直接解码 vs JSON 路径"）。
+LevelData::FieldRole LevelData::fieldRoleForName(const char* name, size_t len) {
+    struct R { const char* n; FieldRole r; };
+    static const R kRoles[] = {
+        {"floor", FieldRole::Floor}, {"eventType", FieldRole::EventType},
+        {"speedType", FieldRole::SpeedType}, {"bpmMultiplier", FieldRole::BpmMultiplier},
+        {"beatsPerMinute", FieldRole::BeatsPerMinute}, {"beatsBehind", FieldRole::BeatsBehind},
+        {"beatsAhead", FieldRole::BeatsAhead}, {"duration", FieldRole::Duration},
+        {"hitsound", FieldRole::Hitsound}, {"hitsoundVolume", FieldRole::HitsoundVolume},
+        {"trackAnimation", FieldRole::TrackAnimation},
+        {"trackDisappearAnimation", FieldRole::TrackDisappear},
+        {"angleOffset", FieldRole::AngleOffset}, {"positionOffset", FieldRole::PositionOffset},
+        {"scale", FieldRole::Scale}, {"opacity", FieldRole::Opacity},
+        {"justThisTile", FieldRole::JustThisTile}, {"editorOnly", FieldRole::EditorOnly},
+        {"position", FieldRole::Position}, {"rotation", FieldRole::Rotation},
+        {"zoom", FieldRole::Zoom}, {"relativeTo", FieldRole::RelativeTo},
+        {"ease", FieldRole::Ease}, {"eventTag", FieldRole::EventTag}, {"tag", FieldRole::Tag},
+        {"id", FieldRole::Id}, {"repeatType", FieldRole::RepeatType},
+        {"repetitions", FieldRole::Repetitions}, {"interval", FieldRole::Interval},
+        {"gapLength", FieldRole::GapLength},
+        {"executeOnCurrentFloor", FieldRole::ExecuteOnCurrentFloor},
+        {"floorCount", FieldRole::FloorCount}, {"startTile", FieldRole::StartTile},
+        {"endTile", FieldRole::EndTile}, {"trackColor", FieldRole::TrackColor},
+        {"secondaryTrackColor", FieldRole::SecondaryTrackColor},
+        {"trackColorType", FieldRole::TrackColorType},
+        {"trackColorPulse", FieldRole::TrackColorPulse}, {"trackStyle", FieldRole::TrackStyle},
+        {"trackColorAnimDuration", FieldRole::TrackColorAnimDuration},
+        {"trackPulseLength", FieldRole::TrackPulseLength},
+        {"trackGlowIntensity", FieldRole::TrackGlowIntensity}, {"plane", FieldRole::Plane},
+        {"startColor", FieldRole::StartColor}, {"endColor", FieldRole::EndColor},
+        {"startOpacity", FieldRole::StartOpacity}, {"endOpacity", FieldRole::EndOpacity},
+        {"flashStyle", FieldRole::FlashStyle}, {"rotationOffset", FieldRole::RotationOffset},
+    };
+    for (const auto& r : kRoles)
+        if (std::strlen(r.n) == len && std::memcmp(r.n, name, len) == 0) return r.r;
+    return FieldRole::Unknown;
+}
+
+bool LevelData::ingestEventFields(const EventFieldValue* v, size_t n, std::string& err) {
+    err.clear();
+    ActionFields f;
+    const auto strOf = [](const EventFieldValue& e) { return std::string(e.str ? e.str : "", e.len); };
+    const auto relOf = [](const char* p, uint32_t len) -> int8_t {
+        if (len == 8 && std::memcmp(p, "ThisTile", 8) == 0) return 0;
+        if (len == 5 && std::memcmp(p, "Start", 5) == 0) return 1;
+        if (len == 3 && std::memcmp(p, "End", 3) == 0) return 2;
+        return 0;
+    };
+    for (size_t i = 0; i < n; ++i) {
+        const EventFieldValue& e = v[i];
+        switch (e.role) {
+            case FieldRole::Floor: f.floor = (int)e.num; f.hasFloor = true; break;
+            case FieldRole::EventType:
+                f.type = eventTypeOf(KeyRef{e.str, (size_t)e.len});
+                f.hasEvent = true;
+                break;
+            case FieldRole::SpeedType: f.isMultiplier = (strOf(e) == "Multiplier"); break;
+            case FieldRole::BpmMultiplier: f.bpmMultiplier = (float)e.num; f.hasBpmMultiplier = true; break;
+            case FieldRole::BeatsPerMinute: f.beatsPerMinute = (float)e.num; f.hasBeatsPerMinute = true; break;
+            case FieldRole::BeatsBehind: f.beatsBehind = (float)e.num; f.hasBeatsBehind = true; break;
+            case FieldRole::BeatsAhead: f.beatsAhead = (float)e.num; f.hasBeatsAhead = true; break;
+            case FieldRole::Duration: f.duration = (float)e.num; f.hasDuration = true; break;
+            case FieldRole::Hitsound: f.hitsound = strOf(e); break;
+            case FieldRole::HitsoundVolume: f.hitsoundVolume = (float)e.num; f.hasHitsoundVolume = true; break;
+            case FieldRole::TrackAnimation: f.trackAnimation = strOf(e); f.hasTrackAnimation = true; break;
+            case FieldRole::TrackDisappear: f.trackDisappear = strOf(e); f.hasTrackDisappear = true; break;
+            case FieldRole::AngleOffset: f.angleOffset = e.num; f.hasAngleOffset = true; break;
+            case FieldRole::PositionOffset:
+                if (e.type == EventFieldValue::Pair) {
+                    if (!e.nullA) { f.offX = (float)e.a; f.hasOffX = true; }
+                    if (!e.nullC) { f.offY = (float)e.c; f.hasOffY = true; }
+                    f.hasOffset = f.hasOffX && f.hasOffY;
+                }
+                break;
+            case FieldRole::Scale:
+                if (e.type == EventFieldValue::Pair) {
+                    if (!e.nullA) f.scaleX = (float)(e.a / 100.0);
+                    if (!e.nullC) f.scaleY = (float)(e.c / 100.0);
+                    f.hasScale = true;
+                } else {
+                    f.scaleX = f.scaleY = (float)(e.num / 100.0);
+                    f.hasScale = true;
+                }
+                break;
+            case FieldRole::Opacity: f.legacyOpacity = (float)e.num; f.hasLegacyOpacity = true; break;
+            case FieldRole::JustThisTile: f.justThisTile = e.b; f.hasJustThisTile = true; break;
+            case FieldRole::EditorOnly: if (e.b) f.editorOnly = true; break;
+            case FieldRole::Position:
+                f.hasPosition = true;
+                if (!e.nullA) { f.hasPosX = true; f.posX = e.a; }
+                if (!e.nullC) { f.hasPosY = true; f.posY = e.c; }
+                break;
+            case FieldRole::Rotation: f.rotation = e.num; f.hasRotation = true; break;
+            case FieldRole::Zoom: f.zoom = e.num; f.hasZoom = true; break;
+            case FieldRole::RelativeTo: {
+                const std::string s = strOf(e);
+                if (s == "Player") f.relativeTo = 0;
+                else if (s == "Tile") f.relativeTo = 1;
+                else if (s == "Global") f.relativeTo = 2;
+                else if (s == "LastPosition") f.relativeTo = 3;
+                else if (s == "LastPositionNoRotation") f.relativeTo = 4;
+                else f.relativeTo = 100;
+                break;
+            }
+            case FieldRole::Ease:
+                f.easeId = (int)easeFromName(std::string_view(e.str ? e.str : "", e.len));
+                f.hasEase = true;
+                break;
+            case FieldRole::EventTag: f.tagPtr = e.str; f.tagEnd = e.str + e.len; break;
+            case FieldRole::Tag: f.tagPtr = e.str; f.tagEnd = e.str + e.len; break;
+            case FieldRole::Id: f.idNum = e.num; f.hasId = true; break;
+            case FieldRole::RepeatType: f.isBeat = (strOf(e) != "Floor"); break;
+            case FieldRole::Repetitions: f.repetitions = e.num; break;
+            case FieldRole::Interval: f.interval = e.num; break;
+            case FieldRole::GapLength: f.gapLength = e.num; f.hasGapLength = true; break;
+            case FieldRole::ExecuteOnCurrentFloor: f.executeOnCurrentFloor = e.b; break;
+            case FieldRole::FloorCount: f.floorCount = e.num; break;
+            case FieldRole::StartTile:
+                f.startOff = (int32_t)e.a;
+                f.startRel = relOf(e.str, e.len);
+                f.hasStartTile = true;
+                break;
+            case FieldRole::EndTile:
+                f.endOff = (int32_t)e.a;
+                f.endRel = relOf(e.str, e.len);
+                f.hasEndTile = true;
+                break;
+            case FieldRole::TrackColor: f.trackColor = strOf(e); f.hasTrackColor = true; break;
+            case FieldRole::SecondaryTrackColor:
+                f.secondaryTrackColor = strOf(e); f.hasSecondaryTrackColor = true; break;
+            case FieldRole::TrackColorType: f.trackColorType = strOf(e); f.hasTrackColorType = true; break;
+            case FieldRole::TrackColorPulse: f.trackColorPulse = strOf(e); f.hasTrackColorPulse = true; break;
+            case FieldRole::TrackStyle: f.trackStyle = strOf(e); f.hasTrackStyle = true; break;
+            case FieldRole::TrackColorAnimDuration:
+                f.trackAnimDuration = (float)e.num; f.hasTrackAnimDuration = true; break;
+            case FieldRole::TrackPulseLength:
+                f.trackPulseLength = (float)e.num; f.hasTrackPulseLength = true; break;
+            case FieldRole::TrackGlowIntensity: f.trackGlow = (float)e.num; f.hasTrackGlow = true; break;
+            case FieldRole::Plane: f.flashPlane = strOf(e); f.hasFlashPlane = true; break;
+            case FieldRole::StartColor: f.startColor = strOf(e); f.hasStartColor = true; break;
+            case FieldRole::EndColor: f.endColor = strOf(e); f.hasEndColor = true; break;
+            case FieldRole::StartOpacity: f.startOpacity = (float)e.num; f.hasStartOpacity = true; break;
+            case FieldRole::EndOpacity: f.endOpacity = (float)e.num; f.hasEndOpacity = true; break;
+            case FieldRole::FlashStyle: f.flashStyle = strOf(e); f.hasFlashStyle = true; break;
+            case FieldRole::RotationOffset: f.rotOffset = (float)e.num; f.hasRotOffset = true; break;
+            default: break;
+        }
+    }
+    FastAction a;
+    bool keep = false;
+    if (!buildAction(f, a, keep)) { err = "事件字段路由失败"; return false; }
+    if (keep) { actions.push_back(std::move(a)); return true; }
+    if (f.type == FastAction::MoveCamera || f.type == FastAction::RepeatEvents ||
+        f.type == FastAction::ColorTrack || f.type == FastAction::RecolorTrack ||
+        f.type == FastAction::Flash || f.type == FastAction::MoveTrack) {
+        CameraSink sink;
+        decodeSpecialEvent(f, sink);
+        for (auto& e : sink.moves) moveTrackEvents.push_back(std::move(e));
+        for (auto& e : sink.cameras) cameraEvents.push_back(std::move(e));
+        for (auto& e : sink.repeats) repeatEvents.push_back(std::move(e));
+        for (auto& e : sink.colors) colorEvents.push_back(std::move(e));
+        for (auto& e : sink.flashes) flashEvents.push_back(std::move(e));
+    }
+    return true;
 }
 
 }  // namespace adofai

@@ -22,9 +22,10 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 ## Features
 
 - **解析** `.adofai`：明文，`.adofai.xz` / `.adofai.zst` 压缩容器，本项目的
-  **`.adocao` 二进制容器**（v3：列按 4096 元素**分块**、块内自选字典/常量/差分/位打包，
-  外加每 4096 层一份续算快照；实测把 19.58 MB 的谱压到 6 KB 级 —— 逐位无损、坏数据响亮失败，
-  格式见上游 `docs/adocao-format.md`），以及 Re_ADOJAS 的 **`.ilytx`**（xz(tar(ilybin))）
+  **`.adocao` 二进制容器**（v7：列按 4096 元素**分块**、块内自选字典/常量/差分/位打包，
+  每 4096 层一份续算快照，外加**自描述事件库** EventSchema/EventColumns —— v6 会丢的类型
+  （装饰物、未知 eventType）也能无损存下；实测把 19.58 MB 的谱压到 6 KB 级 —— 逐位无损、
+  坏数据响亮失败，格式见上游 `docs/adocao-format.md`），以及 Re_ADOJAS 的 **`.ilytx`**（xz(tar(ilybin))）
 - 容器一律按 **magic** 识别，不看扩展名（改过名/抹掉扩展名照样能读）
 - **时间线**：逐层起始时刻、时长、BPM 传播、中旋砖（`angleData = 999`）、SetSpeed/Twirl
 - **相机系统**：MoveCamera / RepeatEvents 的富事件 → 关键帧 → 采样（`core/camera/`，
@@ -52,7 +53,7 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 36/36
+ctest --test-dir build          # 默认 41/41
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
@@ -171,6 +172,11 @@ if (!adofai::exporter::exportLevel(level, "out.adocao", err, adofai::exporter::O
 * **未知 `eventType` 的 action 会没有** —— 两条解析路径在**读入时**就丢弃它们，不是导出丢的；
 * 未建模的 settings 键、`decorations`、注释、键序、数字字面量的写法（`1e2` 与 `100`）都不保留；
 * `pathData` 型的谱面导出后会**同时**带一份 `angleData`（保真优先于体积；要体积就用 `.adocao`）；
+* **带 v7 事件段的 `.adocao` 可以"无损回写"成 `.adofai`**：这时导出会走上游的
+  `adocao::writeLevelJson` —— 它按 schema 把**原始事件 JSON** 原样吐回来，连装饰物、未知
+  `eventType`、以及 settings 里我们没建模的键都不丢（实测 `"settings": {"bpm": 150}` 原样保留，
+  不会被补成 29 个建模键）。要用这条，读谱前 `level.preserveRawJson = true`、打包时
+  `PackOptions{withV7Events=true, v7IncludeLegacy=true}`。
 * **五类"富事件"也能写回去了**：MoveCamera / RepeatEvents / ColorTrack+RecolorTrack / Flash /
   MoveTrack 在 2026-10-18 起搬进了富结构（`cameraEvents` 等），导出模块按各自 `order` 把它们
   写回 `actions` —— 字段级逐位往返（含 ease 名字、relativeTo、disabled/flags、`"Start+3"` 这种
@@ -269,7 +275,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 36 条 / render=ON 41 条**（随模块开关增减）：
+**render=OFF 41 条 / render=ON 46 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|

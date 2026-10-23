@@ -32,6 +32,67 @@ class FloorWindowCache;
 struct WinCacheDeleter { void operator()(FloorWindowCache* p) const; };
 
 struct LevelData {
+    // v7 打包期的"原样成员"捕获（**只在 pack 用**，播放路径一个字节也不多留）：
+    //   * actions 里**每一条**事件的原始 JSON 切片（含我们解码不了的 SetFilter/MoveDecorations/…）；
+    //   * decorations 整个数组的原始切片。
+    // 目的：容器 v7 的 schema 从实际 JSON 自动发现类型/字段，做到"新增事件类型不改格式"。
+    // 默认关（false）→ 播放路径的内存与行为完全不变。
+    bool preserveRawJson = false;
+    std::vector<std::string> rawActionsJson;
+    std::string rawDecorationsJson;
+    std::string rawSettingsJson;   // settings 对象原样（回写时用它，避免逐键建模）
+    // 解析原始成员；失败只警告（pack 会退回旧段），不影响已经解析好的数据。
+    bool captureRawMembers(const char* data, size_t length);
+    // **v7 容器专用入口**：把一条事件的 JSON 对象喂进来，走与 JSON 路径**同一套**字段映射
+    // 与路由（simple → actions；camera/colour/flash/moveTrack/repeat → 各自的富结构）。
+    // 这样"容器 v7 成为唯一存储"不需要重写一遍解码逻辑（重写必然漂移）。
+    bool ingestEventJson(const char* begin, const char* end, std::string& err);
+
+    // **v7 直接喂字段**（不经 JSON）：容器把列值按"角色"送进来，core 负责映射进
+    // `ActionFields` → `buildAction` / `decodeSpecialEvent`，与 JSON 路径共用同一套路由。
+    // role 由 `fieldRoleForName()` 在加载时按 (类型,字段) 算一次，热路径只查表。
+    enum class FieldRole : uint8_t {
+        Unknown = 0,
+        // 简单事件（FastAction）
+        Floor, EventType, SpeedType, BpmMultiplier, BeatsPerMinute, BeatsBehind, BeatsAhead,
+        Duration, Hitsound, HitsoundVolume, TrackAnimation, TrackDisappear,
+        AngleOffset, PositionOffset, Scale, Opacity, JustThisTile, EditorOnly,
+        // 富事件（相机/颜色/闪屏/轨道动画/重复）
+        Position, Rotation, Zoom, RelativeTo, Ease, EventTag, Tag, Id, RepeatType,
+        Repetitions, Interval, GapLength, ExecuteOnCurrentFloor, FloorCount,
+        StartTile, EndTile, TrackColor, SecondaryTrackColor, TrackColorType, TrackColorPulse,
+        TrackStyle, TrackColorAnimDuration, TrackPulseLength, TrackGlowIntensity,
+        Plane, StartColor, EndColor, StartOpacity, EndOpacity, FlashStyle, RotationOffset,
+        Count_
+    };
+    struct EventFieldValue {
+        FieldRole role = FieldRole::Unknown;
+        enum T : uint8_t { Num, Bool, Str, Pair } type = Num;
+        double num = 0.0;
+        bool b = false;
+        const char* str = nullptr;   // Str；Pair 时表示第二分量（如 startTile 的 "ThisTile"）
+        uint32_t len = 0;
+        double a = 0.0, c = 0.0;     // Pair 的两个数值分量
+        uint8_t nullA = 0, nullC = 0;   // 分量是否 null
+    };
+    static FieldRole fieldRoleForName(const char* name, size_t len);
+    bool ingestEventFields(const EventFieldValue* v, size_t n, std::string& err);
+    // v7 段（读 `.adocao` v7 时填；写出来给 `adocao json` 回写与"裁剪/丢失"诊断用）
+    std::vector<uint8_t> v7SchemaBytes;
+    std::vector<uint8_t> v7ColumnsBytes;
+    std::vector<uint8_t> v7CoverageBytes;
+    // v7 的 EventIndex：每 4096 层一个起点（事件下标），`eventBlockSorted=0` 表示谱面事件不是
+    // 按 floor 升序写的（此时索引不可用于二分，只能线性扫）。
+    std::vector<uint32_t> eventBlockStart;
+    uint32_t eventBlockShift = 12;
+    bool eventBlockSorted = false;
+    bool v7ColumnsBlocked = false;   // EventColumns 段是分块容器（每 4096 事件一块）
+    // **事件窗口**（可选）：在加载前设好，`.adocao` v7 就只解出 `floor ∈ [lo, hi)` 的事件。
+    // 用途：2e9 的窗口化加载 / 诊断（WYSIWYG 验证）。未设 = 全量（默认）。
+    bool hasEventWindow = false;
+    int64_t eventWindowLo = 0, eventWindowHi = 0;
+    void setEventWindow(int64_t lo, int64_t hi) { hasEventWindow = true; eventWindowLo = lo; eventWindowHi = hi; }
+
     struct Settings {
         int    version = 15;
         float  bpm = 100.0f;
@@ -299,15 +360,18 @@ struct LevelData {
     std::string trackStyleAt(int64_t floor, double timeSec,
                              const Timeline* timeline = nullptr) const;
 
-    // **样式段**查询（只用于跳过重复计算，不改变语义）：
-    //   * 返回 > floor：对 `f ∈ [floor, 返回值)`，`trackStyleAt(f, timeSec, timeline)` 与
-    //     `trackStyleAt(floor, ...)` 逐位相同；`INT64_MAX` = 再也不会变。
-    //   * 返回 < 0：**本 4096 层块内不可复用**；`-返回值` = 本块结束层号（不含）。调用方在
-    //     `[floor, -返回值)` 内照旧逐层查询，且**不要**重复调用本函数（否则每砖两次查询）。
-    // 当前实现只覆盖"块内没有 RecolorTrack 触发"的情形（那时样式只由 settings + colorEventAt
-    // 决定，变化点就是 ColorTrack 事件的层号）；块内有触发时走上面的负值路径，论证见 .cpp。
-    int64_t trackStyleRunEnd(int64_t floor, double timeSec,
-                             const Timeline* timeline = nullptr) const;
+    // **样式段**查询（只用于跳过重复计算，不改变语义）。
+    struct StyleRun {
+        // 样式不再变化的层号（不含）= 安全复用区间 `[floor, end)` 的上界；
+        // `INT64_MAX` = 再也不会变。
+        int64_t end = std::numeric_limits<int64_t>::max();
+        // false = **本块内不可复用**（块内有 RecolorTrack 触发，见 .cpp 的论证），
+        // 此时 `end` 只是本块的结束层号，调用方应在 `[floor, end)` 内逐层查询，
+        // 且**不要**每层再调本函数（否则有触发的谱反而变慢）。
+        bool reusable = true;
+    };
+    StyleRun trackStyleRunEnd(int64_t floor, double timeSec,
+                              const Timeline* timeline = nullptr) const;
 
     // 某层处生效的**持久段**（忽略 justThisTile / inactive / editorOnly）；没有 → nullptr。
     const ColorEvent* persistentColorAtOrBefore(int64_t floor) const;
@@ -507,6 +571,8 @@ private:
     // parseLegacy(). Set ADOCAO_FORCE_DOM_PARSE=1 to force the legacy path (A/B tests).
     bool tryFastParse(const char* data, size_t length, ProgressCb onProgress);
     // Legacy path: cleanJson + RapidJSON DOM. Also the fallback and the A/B reference.
+    // 真正的加载实现（幂等重置 + 三条解析路径）；public 入口负责 v7 的原始成员捕获。
+    bool loadFromBufferImpl(const char* data, size_t length, ProgressCb onProgress, bool exportOnly);
     bool parseLegacy(const std::string& cleanedJson, ProgressCb onProgress, bool exportOnly);
     // Shared tail: pathData → angleData, tile positions, actions, position offsets
     bool finishLoad(ProgressCb onProgress, bool exportOnly);

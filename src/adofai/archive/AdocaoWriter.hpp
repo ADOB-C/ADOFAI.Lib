@@ -50,8 +50,21 @@ struct PackResult {
 
 // 是否写 `Derived` 段（每 4096 层的续算快照，§8.8 ⑧）。**默认关**：它天生是 O(n/4096) 字节
 // （2³¹ 层 ≈ 19.4 MB），写进去就不再是"v3 文件大小 == v2"。要 ③ 的 O(1) seek / 窗口化就打开它。
+// 段级压缩器：Auto = 同时试 zstd 与 lzma 取更小（2026-10-22：不再死磕 zstd-19，
+// 两张编码器都允许、级别可调；解码侧 v2 起就同时支持 SectionZstd / SectionXz）。
+enum class Compress : uint8_t { Auto = 0, Zstd, Lzma, None };
+
 struct PackOptions {
     bool withCheckpoints = false;
+    Compress compress = Compress::Auto;
+    int level = 0;          // 0 = 各编码器默认（zstd 19 / lzma 9|EXTREME）
+    // **v7 事件库**：把 `LevelData::rawActionsJson` / `rawDecorationsJson`（pack 期捕获的原始切片）
+    // 按自描述 schema 写成 EventSchema + EventColumns 两段。v6 会丢掉的类型（MoveDecorations /
+    // SetFilter / decorations …）由此无损存进容器。裁剪由调用方先过滤 raw 切片完成。
+    bool withV7Events = false;
+    bool v7IncludeLegacy = false;   // true = 不去重（v6 段已有的类型也进 v7；`adocao json` 回写需要）
+    bool v7Only = false;            // true = **v7 唯一存储**：不写 v6 的 Actions/Camera/… 段（读侧走 v7 ingest）
+    uint32_t droppedEvents = 0;   // 可选：写进 Coverage（裁剪导出时用；0 = 没裁）
 };
 
 // 打包。out 是完整的文件字节（含头与段目录）；失败时 err 里是原因。

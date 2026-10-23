@@ -44,8 +44,9 @@ ADOCAO 是**天天改**的那一个。若本体依赖本库，每次改本体都
 ### 唯一的例外：`src/adofai/export/**`
 
 `ADOFAI::export`（写 `.adofai` / `.adofai.xz` / `.adofai.zst` / `.adocao`）是**库自己加的**：
-ADOCAO 本体刻意不做导出（它的 `--export` 是打拍音 WAV），所以这段代码没有上游对应物，
-只能住在这儿。为什么不让本体当它的家见上文的"为什么不让本体当消费者"——反过来同样成立：
+ADOCAO 本体的 `--export` 是打拍音 WAV，**没有**"任意来源 → 四种格式"的导出。
+（2026-10-22 起上游有了 `archive/AdocaoJsonWriter` —— 但那是 `.adocao` v7 → `.adofai` 的
+**无损回写**，要求容器里带自描述事件段；库的导出模块在有 v7 段时优先用它，否则用自己的写方。）为什么不让本体当它的家见上文的"为什么不让本体当消费者"——反过来同样成立：
 **本体不需要它**，塞进主源就是给主源加一个没人用的功能。
 
 它待在 `src/adofai/` 下只是为了 include 根一致（源码树 `src/adofai/export/X` ⇔
@@ -156,14 +157,14 @@ ctest --test-dir build
 
 | 配置 | 关键参数 | 期望 |
 |---|---|---|
-| 默认 | — | ctest **36/36** |
-| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **22/22**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
-| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | **36/36**（走 `find_package(LibLZMA/zstd)`）|
-| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | **36/36**，core 里零 `mz_` 符号 |
-| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | **32/32** |
-| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | **36/36**（会引入 miniaudio + stb）|
-| render=ON | `-DADOFAI_LIB_RENDER=ON` | **41/41**（引入 glad + GLFW + 平台 GL；三层几何）|
-| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | **34/34**（`ADOFAI::export` 不存在，link 它是编译期报错）|
+| 默认 | — | ctest **41/41** |
+| 无 archive | `-DADOFAI_LIB_ARCHIVE=OFF` | **23/23**（与 archive 强相关的用例按设计跳过）；前缀里零 lzma/zstd；`ADOFAI::export` 只剩明文 `.adofai`（另三种格式明确报不可用）|
+| 系统库 | `-DADOFAI_LIB_BUNDLE_DEPS=OFF` | **41/41**（走 `find_package(LibLZMA/zstd)`）|
+| 无资产 zip | `-DADOFAI_LIB_ASSET_ZIP=OFF` | **41/41**，core 里零 `mz_` 符号 |
+| 无 audio | `-DADOFAI_LIB_AUDIO=OFF` | **37/37** |
+| 全开 | `-DADOFAI_LIB_AUDIO_DEVICE=ON` | **41/41**（会引入 miniaudio + stb）|
+| render=ON | `-DADOFAI_LIB_RENDER=ON` | **46/46**（引入 glad + GLFW + 平台 GL；三层几何）|
+| 无导出 | `-DADOFAI_LIB_EXPORT=OFF` | **39/39**（`ADOFAI::export` 不存在，link 它是编译期报错）|
 
 > 计数会随用例增减变，**它只是"这一刻该看到多少条"的对照表**，不是判据；判据永远是
 > "`ctest` 全绿 + 该跳过的都打印了跳过原因"。

@@ -5,9 +5,26 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=596138c
-ADOCAO_COMMIT_FULL=596138c0b750a0ce4a4f4775b6407c08b5785db0
-ADOCAO_COMMIT_DATE=2026-10-21
+ADOCAO_COMMIT=8407089
+ADOCAO_COMMIT_FULL=8407089f4983d1564f6a61576a7e554e18728db9
+ADOCAO_COMMIT_DATE=2026-10-22
+# 本次同步要点（32 个提交，镜像区 17 个文件改动；223 个镜像文件逐字节一致）：
+#
+#  1. **`.adocao` 升到 v7**：自描述的 `EventSchema` + `EventColumns`（+ EventIndex、事件窗口、
+#     "直接解码"不经 JSON）。v6 会整体丢的类型（装饰物 / 未知 eventType）现在能无损存进容器。
+#     archive 新增 AdocaoKinds / AdocaoSchema / AdocaoEventColumns 四个源文件。
+#  2. **上游终于有了自己的"写方"**：`archive/AdocaoJsonWriter`（`writeLevelJson`）——
+#     `.adocao`(v7) → `.adofai` 的**无损**回写（按 schema 吐出原始事件 JSON + rawSettingsJson）。
+#     这与库自有的 `ADOFAI::export` 重叠但不相同：上游要求带 v7 段、只出明文；库能接受任意
+#     来源的 LevelData、出四种格式。库这边**分层**：有 v7 段就优先用上游的（无损），否则用
+#     自己的写方。`canExport` 同理 —— 有 v7 段时连 ScaleRadius 都能写。
+#  3. 新用例 +5：adocao_schema / adocao_event_columns / adocao_v7_container /
+#     adocao_v7_corpus（语料回归，17 张谱）/ adocao_direct_fields（只链 core）。全部挂上。
+#  4. 两个 API 细节（写进 MIRROR）：捕获原始成员必须先 `preserveRawJson = true`；
+#     `pack` 的 `withV7Events` 默认只写"v6 存不下的类型"，要能回写必须 `v7IncludeLegacy = true`。
+#
+# 上一次同步：596138c（Timeline 块物化与锚点解耦；JsonScan 去掉 MSVC 分支）。
+
 # 本次同步要点（3 个提交；210 个镜像文件逐字节一致）：
 #
 #  1. `Timeline` 把**块物化粒度与锚点解耦**（1024），recomputeBlock 的 p90 降到 1/4。

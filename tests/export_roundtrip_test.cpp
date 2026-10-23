@@ -316,6 +316,62 @@ int main(int argc, char** argv)
     }
 #endif
 
+#ifdef ADOFAI_EXPORT_TEST_HAVE_ARCHIVE
+    // ── v7 事件段：**无损**回写（2026-10-22 上游给 `.adocao` 加了自描述事件库）───────
+    // 有 v7 段时导出改走 `adocao::writeLevelJson`：它按 schema 把原始事件 JSON 原样吐回来，
+    // 连**未知 eventType** 和 decorations 都不丢（建模写方会把未知类型丢掉 —— 那是解析期的行为）。
+    {
+        std::string pick;
+        for (int ai = 2; ai < argc && pick.empty(); ++ai) {
+            const std::vector<char> raw = readRawFile(argv[ai]);
+            if (std::string(raw.begin(), raw.end()).find("UnknownType") != std::string::npos)
+                pick = argv[ai];
+        }
+        if (pick.empty()) {
+            std::printf("SKIP  v7 无损回写（这批输入里没有带未知 eventType 的谱）\n");
+        } else {
+            LevelData a;
+            // 上游默认 **不**捕获原始成员（`preserveRawJson=false`，那是内存/时间成本）——
+            // 想打带 v7 段的容器必须先打开它。
+            a.preserveRawJson = true;
+            if (!a.loadFromFile(pick)) {
+                fail("v7 无损回写", "加载失败：" + pick);
+            } else {
+                adofai::adocao::PackOptions opts;
+                opts.withV7Events = true;        // 写 EventSchema + EventColumns
+                opts.v7IncludeLegacy = true;     // 不去重：v6 段有的类型也进 v7（回写需要）
+                std::vector<uint8_t> bytes;
+                std::string err;
+                const std::string cont = outDir + "/v7_lossless.adocao";
+                if (!adofai::adocao::packLevel(a, bytes, err, nullptr, opts)) {
+                    fail("v7 无损回写", "pack(withV7Events) 失败：" + err);
+                } else if (!writeRawFile(cont, bytes.data(), bytes.size())) {
+                    fail("v7 无损回写", "写不出 " + cont);
+                } else {
+                    LevelData b;
+                    if (!b.loadFromFile(cont)) {
+                        fail("v7 无损回写", "自己打的 v7 容器读不回来");
+                    } else if (b.v7SchemaBytes.empty() || b.v7ColumnsBytes.empty()) {
+                        fail("v7 无损回写", "读回来的 LevelData 没有 v7 段（写方没写？）");
+                    } else {
+                        const std::string out = outDir + "/v7_lossless.adofai";
+                        if (!exporter::exportLevel(b, exporter::Format::Adofai, out, err)) {
+                            fail("v7 无损回写", "导出失败：" + err);
+                        } else {
+                            const std::vector<char> got = readRawFile(out);
+                            const std::string txt(got.begin(), got.end());
+                            if (txt.find("UnknownType") == std::string::npos)
+                                fail("v7 无损回写", "导出的 .adofai 里没有 UnknownType —— 无损路径没生效");
+                            else
+                                std::printf("OK    v7 段无损回写（未知 eventType 被保留）\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
+#endif
+
     // ── 角度紧凑存储（上游 2026-10 加的 `releaseAngleData`）──────────────────
     // 压缩成功后 `angleData` 会被 swap 掉、值只留在 AngleStore 里。导出必须照样写得出同一批
     // 角度 —— 所以 LevelJsonWriter 走的是 `angleCount()/angleAt()`，不是直读 `angleData`

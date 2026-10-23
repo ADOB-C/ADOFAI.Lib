@@ -5,9 +5,12 @@
 
 #include "archive/AdocaoBlocked.hpp"
 #include "archive/AdocaoColumns.hpp"
+#include "archive/AdocaoEventColumns.hpp"
+#include "archive/AdocaoSchema.hpp"
 #include "archive/AdocaoFormat.hpp"
 #include "archive/LevelArchive.hpp"   // 段级解压复用现成的 decompressLevelArchive
 #include "core/level/LevelData.hpp"
+#include "core/util/Env.hpp"
 
 namespace adofai {
 namespace adocao {
@@ -213,6 +216,12 @@ bool parseSettings(const std::vector<std::string>& pool, const uint8_t* p, size_
     if (off + 4 <= n) { if (!f32(s.trackColorAnimDuration)) return false; }
     if (off + 4 <= n) { if (!f32(s.trackPulseLength)) return false; }
     if (off + 4 <= n) { if (!f32(s.trackGlowIntensity)) return false; }
+    // 2026-10-22 追加（**真正的末尾**）：separateCountdownTime。旧文件没有这个字节 → 默认 false。
+    if (off + 1 <= n) {
+        uint8_t sc = 0;
+        if (!u8(sc)) return false;
+        s.separateCountdownTime = (sc != 0);
+    }
     return true;
 }
 
@@ -561,6 +570,125 @@ bool unpackLevel(const uint8_t* data, size_t length, LevelData& out, std::string
             return false;
         }
         out.pathData.assign((const char*)pathSec->p + 8, (size_t)len);
+    }
+
+    // v7：自描述事件库三节。这里**只做搬运**（存进 LevelData 供 `adocao json` 回写与诊断用），
+    // 播放语义仍由上面那些 v6 段决定 —— 这样 v7 的引入不会改变任何渲染行为。
+    {
+        out.v7SchemaBytes.clear();
+        out.v7ColumnsBytes.clear();
+        out.v7CoverageBytes.clear();
+        if (const Sec* s14 = findSec(secs, SectionId::EventSchema)) {
+            out.v7SchemaBytes.assign(s14->p, s14->p + s14->size);
+        }
+        if (const Sec* s15 = findSec(secs, SectionId::EventColumns)) {
+            out.v7ColumnsBytes.assign(s15->p, s15->p + s15->size);
+            out.v7ColumnsBlocked = (s15->flags & kFlagBlockedEvents) != 0;
+        }
+        if (const Sec* s16 = findSec(secs, SectionId::Coverage)) {
+            out.v7CoverageBytes.assign(s16->p, s16->p + s16->size);
+        }
+        if (const Sec* s17 = findSec(secs, SectionId::EventIndex)) {
+            const uint8_t* q = s17->p;
+            const uint8_t* qe = s17->p + s17->size;
+            if ((size_t)(qe - q) < 12) { err = "v7: EventIndex 段截断"; return false; }
+            const uint32_t shift = rdU32(q);
+            const uint32_t blocks = rdU32(q + 4);
+            const uint32_t sorted = rdU32(q + 8);
+            if (shift > 20 || blocks > (1u << 24) || (size_t)(qe - q) < 12 + ((size_t)blocks + 1) * 4) {
+                err = "v7: EventIndex 段损坏";
+                return false;
+            }
+            out.eventBlockShift = shift;
+            out.eventBlockSorted = sorted != 0;
+            out.eventBlockStart.resize(blocks + 1);
+            for (uint32_t i = 0; i <= blocks; ++i) out.eventBlockStart[i] = rdU32(q + 12 + i * 4);
+        }
+        if (const Sec* pre = findSec(secs, SectionId::Preserved)) {
+            out.rawSettingsJson.assign((const char*)pre->p, pre->size);
+        }
+        if (!out.v7SchemaBytes.empty() != !out.v7ColumnsBytes.empty()) {
+            err = "v7: EventSchema 与 EventColumns 必须同时存在";
+            return false;
+        }
+    }
+
+    // **v7 唯一存储**：容器里没有 v6 事件段时，事件全部从 EventColumns 解出来，
+    // 再走 `LevelData::ingestEventJson`（与 JSON 路径同一套字段映射/路由，不重写第二遍）。
+    if (!out.v7ColumnsBytes.empty() && !out.v7SchemaBytes.empty() &&
+        out.actions.empty() && out.cameraEvents.empty() && out.repeatEvents.empty() &&
+        out.colorEvents.empty() && out.flashEvents.empty() && out.moveTrackEvents.empty()) {
+        Schema schema;
+        EventColumns cols;
+        std::vector<std::string> events;
+        std::vector<uint16_t> typeIds;   // 与 events 平行（块化解码也要它，否则下面会越界）
+        if (!SchemaBuilder::deserialize(out.v7SchemaBytes.data(), out.v7SchemaBytes.size(), schema, err)) {
+            err = "v7 事件库: " + err;
+            return false;
+        }
+        // **直接字段**：容器解出结构化字段，交给 `ingestEventFields`（与 JSON 路径共用路由），
+        // 不再把每条事件拼成 JSON 文本。`ADOCAO_V7_JSON_EVENTS=1` 可退回旧路做 A/B。
+        const bool direct = !env::flag("ADOCAO_V7_JSON_EVENTS");
+        if (direct) {
+            struct Ctx {
+                LevelData* lv;
+                const Schema* schema;
+                bool window;
+                int64_t lo, hi;
+            };
+            Ctx ctx{&out, &schema, out.hasEventWindow, out.eventWindowLo, out.eventWindowHi};
+            auto fn = [](void* c, const LevelData::EventFieldValue* v, size_t n, uint16_t typeId,
+                         std::string& ferr) -> bool {
+                Ctx* cc = (Ctx*)c;
+                if (cc->schema->types[typeId].source != (uint8_t)EventSource::Actions) return true;
+                if (cc->window) {   // 窗口化：块边界是近似的，这里按 floor 精确过滤
+                    bool hasFloor = false;
+                    int64_t fl = 0;
+                    for (size_t i = 0; i < n; ++i)
+                        if (v[i].role == LevelData::FieldRole::Floor) { fl = (int64_t)v[i].num; hasFloor = true; break; }
+                    if (!hasFloor || fl < cc->lo || fl >= cc->hi) return true;
+                }
+                return cc->lv->ingestEventFields(v, n, ferr);
+            };
+            // 有 EventIndex 且请求了窗口 → 只解命中的块
+            uint32_t firstEv = 0, lastEv = 0xFFFFFFFFu;
+            if (out.hasEventWindow && out.eventBlockSorted && out.eventBlockStart.size() >= 2) {
+                const uint32_t bs = out.eventBlockShift;
+                const uint32_t nb = (uint32_t)out.eventBlockStart.size() - 1;
+                const uint32_t lo = (uint32_t)((out.eventWindowLo < 0 ? 0 : out.eventWindowLo) >> bs);
+                const uint32_t hi = (uint32_t)(((out.eventWindowHi - 1) < 0 ? 0 : (out.eventWindowHi - 1)) >> bs);
+                firstEv = out.eventBlockStart[std::min(lo, nb)];
+                lastEv = out.eventBlockStart[std::min(hi + 1, nb)];
+            }
+            if (!decodeEventFieldsBlockedEach(schema, out.v7ColumnsBytes.data(), out.v7ColumnsBytes.size(),
+                                              fn, &ctx, err, firstEv, lastEv)) {
+                err = "v7 事件库: " + err;
+                return false;
+            }
+        } else if (out.v7ColumnsBlocked) {
+            if (!decodeEventColumnsBlockedAll(schema, out.v7ColumnsBytes.data(), out.v7ColumnsBytes.size(),
+                                              events, err, &typeIds)) {
+                err = "v7 事件库: " + err;
+                return false;
+            }
+        } else if (!deserializeEventColumns(schema, out.v7ColumnsBytes.data(), out.v7ColumnsBytes.size(), cols, err) ||
+                   !decodeEventColumns(schema, cols, cols.typeIds.size(), events, err)) {
+            err = "v7 事件库: " + err;
+            return false;
+        }
+        if (!direct && !out.v7ColumnsBlocked) typeIds = cols.typeIds;
+        // 只还原 **actions**（source=Actions）；decorations 数组里的类型（AddDecoration/AddParticle…）
+        // 在 JSON 路径里本来就不进 LevelData（它们由 decorations 数组承载），这里同样跳过。
+        for (size_t i = 0; i < events.size() && !direct; ++i) {
+            if (i >= typeIds.size()) { err = "v7: 类型列与事件数不一致"; return false; }
+            const auto& td = schema.types[typeIds[i]];
+            if (td.source != (uint8_t)EventSource::Actions) continue;
+            const auto& js = events[i];
+            if (!out.ingestEventJson(js.data(), js.data() + js.size(), err)) {
+                err = "v7 事件还原: " + err;
+                return false;
+            }
+        }
     }
 
     // ⑥ Derived（可选）：checkpoint 表。坏数据**明确失败**（它是 ③ 的寻址依据，不许半信半疑）

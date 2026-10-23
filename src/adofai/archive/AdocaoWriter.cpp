@@ -1,14 +1,24 @@
 #include "archive/AdocaoWriter.hpp"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <set>
 
 #include "archive/AdocaoBlocked.hpp"
+#include "core/util/Env.hpp"
 #include "core/util/Logger.hpp"
 #include "archive/AdocaoCheckpoints.hpp"
+#include "archive/AdocaoEventColumns.hpp"
+#include "archive/AdocaoSchema.hpp"
 #include "archive/AdocaoColumns.hpp"
 #include "core/level/LevelData.hpp"
 
-#include <zstd.h>   // 段级压缩（archive 的 PRIVATE 依赖；实测真实文件上 zstd 比 xz 更小）
+#include <rapidjson/document.h>
+#include <rapidjson/stringbuffer.h>
+#include <rapidjson/writer.h>
+#include <zstd.h>
+#include <lzma.h>   // 段级压缩（archive 的 PRIVATE 依赖；实测真实文件上 zstd 比 xz 更小）
 
 namespace adofai {
 namespace adocao {
@@ -84,9 +94,46 @@ namespace {
 struct ZEntry {
     const uint8_t* data = nullptr;
     size_t size = 0;
-    bool smaller = false;          // zstd 确实更小 → z 有效
+    bool smaller = false;          // 压缩确实更小 → z 有效
+    uint8_t codec = 0;             // 实际选中的 Codec（Raw/SectionZstd/SectionXz）
     std::vector<uint8_t> z;
 };
+// 当前这次打包的压缩配置（决策阶段与落盘阶段共用同一份，保证"预估 == 实存"）
+thread_local Compress g_compress = Compress::Auto;
+thread_local int g_level = 0;
+// 段级压缩决策：按配置生成候选，**只保留比原样更小的那个**。
+// 返回 true 表示 out/codec 有效（压缩更小）；false 表示应当存原样。
+bool bestStore(const std::vector<uint8_t>& blob, Compress cfg, int level,
+               std::vector<uint8_t>& out, uint8_t* codec) {
+    if (blob.size() < 256 || cfg == Compress::None) return false;
+    out.clear();
+    if (cfg == Compress::Auto || cfg == Compress::Zstd) {
+        std::vector<uint8_t> z(ZSTD_compressBound(blob.size()));
+        const int lvl = level > 0 ? level : 19;
+        const size_t got = ZSTD_compress(z.data(), z.size(), blob.data(), blob.size(), lvl);
+        if (!ZSTD_isError(got) && got < blob.size()) {
+            z.resize(got);
+            out = std::move(z);
+            if (codec) *codec = (uint8_t)Codec::SectionZstd;
+        }
+    }
+    if (cfg == Compress::Auto || cfg == Compress::Lzma) {
+        // xz 容器（lzma_easy_buffer_encode）；解码侧走 LevelArchiveKind::Xz 那条既有路径
+        const uint32_t preset = (uint32_t)(level > 0 ? level : 9) | LZMA_PRESET_EXTREME;
+        std::vector<uint8_t> x(lzma_stream_buffer_bound(blob.size()));
+        size_t outPos = 0;
+        const lzma_ret r = lzma_easy_buffer_encode(preset, LZMA_CHECK_CRC64, nullptr,
+                                                   blob.data(), blob.size(),
+                                                   x.data(), &outPos, x.size());
+        if (r == LZMA_OK && outPos < blob.size() && (out.empty() || outPos < out.size())) {
+            x.resize(outPos);
+            out = std::move(x);
+            if (codec) *codec = (uint8_t)Codec::SectionXz;
+        }
+    }
+    return !out.empty();
+}
+
 struct ZCache {
     std::vector<ZEntry> v;
     void reset() { v.clear(); }
@@ -100,18 +147,16 @@ struct ZCache {
         if (const ZEntry* e = find(b)) return e->smaller ? e->z.size() : b.size();
         ZEntry e;
         e.data = b.data(); e.size = b.size();
-        e.z.resize(ZSTD_compressBound(b.size()));
-        const size_t got = ZSTD_compress(e.z.data(), e.z.size(), b.data(), b.size(), 19);
-        if (!ZSTD_isError(got) && got < b.size()) { e.z.resize(got); e.smaller = true; }
-        else e.z.clear();
+        e.smaller = bestStore(b, g_compress, g_level, e.z, &e.codec);
         v.push_back(std::move(e));
         return v.back().smaller ? v.back().z.size() : b.size();
     }
     // true = 决策已覆盖该 blob（out 非空表示用压缩结果，空表示明确存原样）
-    bool take(const std::vector<uint8_t>& b, std::vector<uint8_t>& out) const {
+    bool take(const std::vector<uint8_t>& b, std::vector<uint8_t>& out, uint8_t* codec = nullptr) const {
         const ZEntry* e = find(b);
         if (!e) return false;
         if (e->smaller) out = e->z;
+        if (codec) *codec = e->smaller ? e->codec : (uint8_t)Codec::Raw;
         return true;
     }
 };
@@ -190,6 +235,9 @@ void writeSettings(const LevelData::Settings& s, Pool& pool, std::vector<uint8_t
     putF32(b, s.trackColorAnimDuration);
     putF32(b, s.trackPulseLength);
     putF32(b, s.trackGlowIntensity);
+    // 2026-10-22 **真正的末尾**追加：separateCountdownTime（决定性影响时间基准）。
+    // 旧读者读完原字段就返回、尾部多余字节被忽略；读侧"尾部还在才读"。
+    putU8(b, s.separateCountdownTime ? 1 : 0);
 }
 
 }  // namespace
@@ -197,6 +245,8 @@ void writeSettings(const LevelData::Settings& s, Pool& pool, std::vector<uint8_t
 bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& err,
                PackResult* result, const PackOptions& opts) {
     g_zcache.reset();   // 每次打包独立的决策缓存（同 blob 只压一次）
+    g_compress = opts.compress;
+    g_level = opts.level;
 
     out.clear();
     err.clear();
@@ -445,7 +495,7 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
         if (!anglePacked) s.flags |= kFlagLegacyColumns;
         s.blob = std::move(angleBlob); secs.push_back(std::move(s));
     }
-    {
+    if (!opts.v7Only) {
         Section s; s.id = (uint8_t)SectionId::Actions; s.elements = level.actions.size();
         s.preStored = actionsPacked;
         if (!actionsPacked) s.flags |= kFlagLegacyColumns;
@@ -476,7 +526,7 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
     }
     // ---- 相机 / 重复事件：罕见但**必须无损往返**（否则 .adocao 里的运镜会整段消失）----
     // 定长记录、字段顺序固定（打包确定性）；tag 走字符串池下标。order 不存 —— 它 = 记录下标。
-    if (!level.cameraEvents.empty()) {
+    if (!opts.v7Only && !level.cameraEvents.empty()) {
         Section s; s.id = (uint8_t)SectionId::Camera; s.elements = level.cameraEvents.size();
         s.blob.reserve(level.cameraEvents.size() * 38);
         for (size_t i = 0; i < level.cameraEvents.size(); ++i) {
@@ -497,7 +547,7 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
         }
         secs.push_back(std::move(s));
     }
-    if (!level.repeatEvents.empty()) {
+    if (!opts.v7Only && !level.repeatEvents.empty()) {
         Section s; s.id = (uint8_t)SectionId::Repeat; s.elements = level.repeatEvents.size();
         s.blob.reserve(level.repeatEvents.size() * 19);
         for (size_t i = 0; i < level.repeatEvents.size(); ++i) {
@@ -511,7 +561,7 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
         }
         secs.push_back(std::move(s));
     }
-    if (!level.colorEvents.empty()) {
+    if (!opts.v7Only && !level.colorEvents.empty()) {
         Section s; s.id = (uint8_t)SectionId::Colour; s.elements = level.colorEvents.size();
         s.blob.reserve(level.colorEvents.size() * 50);
         for (size_t i = 0; i < level.colorEvents.size(); ++i) {
@@ -538,7 +588,7 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
         }
         secs.push_back(std::move(s));
     }
-    if (!level.flashEvents.empty()) {
+    if (!opts.v7Only && !level.flashEvents.empty()) {
         Section s; s.id = (uint8_t)SectionId::Flash; s.elements = level.flashEvents.size();
         s.blob.reserve(level.flashEvents.size() * 32);
         for (const LevelData::FlashEvent& e : level.flashEvents) {
@@ -556,7 +606,7 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
         }
         secs.push_back(std::move(s));
     }
-    if (!level.moveTrackEvents.empty()) {
+    if (!opts.v7Only && !level.moveTrackEvents.empty()) {
         Section s; s.id = (uint8_t)SectionId::MoveTrack; s.elements = level.moveTrackEvents.size();
         s.blob.reserve(level.moveTrackEvents.size() * 54);
         for (size_t mi = 0; mi < level.moveTrackEvents.size(); ++mi) {
@@ -586,6 +636,123 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
         secs.push_back(std::move(s));
     }
 
+    // ---- v7：自描述事件库（schema + 列 + 裁剪记录）----
+    // 只写"v6 装不下/会丢"的那部分内容的**无损**表示；播放路径仍读 v6 段（这里不改变语义）。
+    if ((opts.withV7Events || opts.v7Only) && !level.rawActionsJson.empty()) {
+        // **只写 v6 段装不下的类型**（去重）：Camera/Colour/Flash/MoveTrack/Repeat 与
+        // Actions 里那 9 类播放事件已经有定长段了，再写一遍纯属重复（实测 16 KB）。
+        // v7 的价值在"v6 会整体丢弃的那部分"：MoveDecorations/SetFilter*/Bloom/装饰…
+        static const std::set<std::string> kLegacyStored = {
+            "Twirl","SetSpeed","PositionTrack","SetHitsound","Bookmark","Pause","AnimateTrack",
+            "MoveCamera","ColorTrack","RecolorTrack","Flash","MoveTrack","RepeatEvents","ScaleRadius"};
+        std::vector<std::string> evs;
+        std::vector<int64_t> floors;   // 与 evs 平行（缺 floor 记 -1）
+        evs.reserve(level.rawActionsJson.size());
+        for (const auto& js : level.rawActionsJson) {
+            rapidjson::Document d;
+            d.Parse(js.c_str(), js.size());
+            const char* t = (d.HasParseError() || !d.HasMember("eventType")) ? "" : d["eventType"].GetString();
+            if (!(opts.v7IncludeLegacy || opts.v7Only) && kLegacyStored.count(t)) continue;   // 已由 v6 段承载
+            evs.push_back(js);
+            floors.push_back(d.HasParseError() || !d.HasMember("floor") || !d["floor"].IsInt64()
+                                 ? -1 : d["floor"].GetInt64());
+        }
+        std::vector<uint8_t> srcs(evs.size(), 0);
+        const size_t actionEventCount = evs.size();   // decorations 追加之前的事件数（前缀才是按 floor 有序的）
+        if (!level.rawDecorationsJson.empty()) {
+            rapidjson::Document dd;
+            dd.Parse(level.rawDecorationsJson.c_str(), level.rawDecorationsJson.size());
+            if (dd.HasParseError() || !dd.IsArray()) { err = "v7: decorations 切片解析失败"; return false; }
+            for (const auto& v : dd.GetArray()) {
+                rapidjson::StringBuffer b;
+                rapidjson::Writer<rapidjson::StringBuffer> w(b);
+                v.Accept(w);
+                evs.emplace_back(b.GetString(), b.GetSize());
+                srcs.push_back((uint8_t)1);
+                floors.push_back(v.HasMember("floor") && v["floor"].IsInt64() ? v["floor"].GetInt64() : -1);
+            }
+        }
+        SchemaBuilder sb;
+        for (size_t i = 0; i < evs.size(); ++i) {
+            rapidjson::Document d;
+            d.Parse(evs[i].c_str(), evs[i].size());
+            if (d.HasParseError() || !d.IsObject()) { err = "v7: 事件切片解析失败"; return false; }
+            auto it = d.FindMember("eventType");
+            if (it == d.MemberEnd() || !it->value.IsString()) { err = "v7: 事件缺 eventType"; return false; }
+            sb.addEvent(std::string_view(it->value.GetString(), it->value.GetStringLength()),
+                        srcs[i] ? EventSource::Decorations : EventSource::Actions, d);
+        }
+        sb.finalize();
+        EventColumns cols;
+        std::string cerr;
+        if (!buildEventColumns(sb.schema(), evs, srcs, cols, cerr)) {
+            err = "v7: 建列失败: " + cerr;
+            return false;
+        }
+        if (!level.rawSettingsJson.empty()) {
+            Section pre; pre.id = (uint8_t)SectionId::Preserved;
+            pre.blob.assign(level.rawSettingsJson.begin(), level.rawSettingsJson.end());
+            secs.push_back(std::move(pre));
+        }
+        Section sch; sch.id = (uint8_t)SectionId::EventSchema;
+        sch.blob = sb.serialize();
+        secs.push_back(std::move(sch));
+        Section col; col.id = (uint8_t)SectionId::EventColumns;
+        // 分块（每 4096 事件一块，块内自包含）：窗口化 seek 只需要解命中的块。
+        size_t blocks = 0;
+        // 块大小（默认 **16384**）：块越小 seek 越细，但块间重复的字典/位图越多。
+        // 实测（v7-only vs 不分块）：2025 12.5k 事件 4096→+6.5 KB / 8192→+3.2 KB / 16384→+88 B；
+        // MEGAMIX_2 38k 事件 4096→+14.4 KB / 8192→+18.6 KB / 16384→+4.3 KB（压缩对块边界敏感，非单调）。
+        uint32_t blockEvents = 16384;
+        if (const char* e = std::getenv("ADOCAO_V7_BLOCK_EVENTS")) {
+            const int v = std::atoi(e);
+            if (v >= 256 && v <= 1 << 20) blockEvents = (uint32_t)v;
+        }
+        col.blob = serializeEventColumnsBlocked(sb.schema(), evs, srcs, blockEvents, &blocks);
+        if (blocks == 0) { err = "v7: 事件列分块失败"; return false; }
+        col.flags |= kFlagBlockedEvents;
+        col.elements = evs.size();
+        secs.push_back(std::move(col));
+        // EventIndex：按 4096 层块记录"第一个 floor >= b<<12 的事件下标"
+        {
+            if (env::flag("ADOCAO_V7_DEBUG"))
+                std::fprintf(stderr, "[v7] floors=%zu first=%lld last=%lld\n", floors.size(),
+                             floors.empty() ? -1LL : (long long)floors.front(),
+                             floors.empty() ? -1LL : (long long)floors.back());
+            // 索引只覆盖 **actions 前缀**：decorations 是追加在后面的，floor 会从头再来一次，
+            // 混在一起就不是升序了（踩过：last=-1 + 倒序 → 索引没写出来）。
+            bool sorted = actionEventCount > 0;
+            for (size_t i = 1; i < actionEventCount; ++i)
+                if (floors[i] >= 0 && floors[i - 1] >= 0 && floors[i] < floors[i - 1]) { sorted = false; break; }
+            if (sorted && actionEventCount > 0) {
+                int64_t maxFloor = 0;
+                for (size_t i = 0; i < actionEventCount; ++i)
+                    if (floors[i] > maxFloor) maxFloor = floors[i];
+                const uint32_t shift = 12;
+                const uint32_t blocks = (uint32_t)((maxFloor >> shift) + 1);
+                std::vector<uint32_t> starts(blocks + 1, 0);
+                size_t ei = 0;
+                for (uint32_t b = 0; b <= blocks; ++b) {
+                    const int64_t lo = (int64_t)b << shift;
+                    while (ei < actionEventCount && floors[ei] >= 0 && floors[ei] < lo) ++ei;
+                    starts[b] = (uint32_t)ei;
+                }
+                Section ix; ix.id = (uint8_t)SectionId::EventIndex;
+                putU32(ix.blob, shift);
+                putU32(ix.blob, blocks);
+                putU32(ix.blob, 1);   // sorted
+                for (uint32_t v : starts) putU32(ix.blob, v);
+                secs.push_back(std::move(ix));
+            }
+        }
+        if (opts.droppedEvents) {
+            Section cov; cov.id = (uint8_t)SectionId::Coverage;
+            putU32(cov.blob, opts.droppedEvents);
+            putU32(cov.blob, (uint32_t)evs.size());
+            secs.push_back(std::move(cov));
+        }
+    }
+
     // ---- 段目录（偏移 8 B 对齐，为 mmap 直读）----
     const uint64_t tableBytes = sizeof(Header) + (uint64_t)secs.size() * sizeof(SectionEntry);
     uint64_t off = (tableBytes + 7u) & ~7ull;
@@ -594,19 +761,19 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
     // 段级压缩：zstd 19（实测真实文件上比 xz 更小、解码更快、且 archive 本来就链着它）。
     // 太小的段不值得压；压不小就存原样。crc32c 覆盖**实际存储的字节**（读侧先校验再解压）。
     std::vector<std::vector<uint8_t>> stored(secs.size());
+    std::vector<uint8_t> secCodec(secs.size(), (uint8_t)Codec::Raw);
     for (size_t i = 0; i < secs.size(); ++i) {
         const std::vector<uint8_t>& blob = secs[i].blob;
         stored[i] = blob;
         if (!secs[i].preStored && blob.size() >= 256) {
             std::vector<uint8_t> z;
-            if (g_zcache.take(blob, z)) {
+            if (g_zcache.take(blob, z, &secCodec[i])) {
                 if (!z.empty()) stored[i] = std::move(z);   // 决策阶段已压过 → 直接复用
             } else {
-                z.resize(ZSTD_compressBound(blob.size()));
-                const size_t got = ZSTD_compress(z.data(), z.size(), blob.data(), blob.size(), 19);
-                if (!ZSTD_isError(got) && got < blob.size()) {
-                    z.resize(got);
+                uint8_t codec = (uint8_t)Codec::Raw;
+                if (bestStore(blob, g_compress, g_level, z, &codec)) {
                     stored[i] = std::move(z);
+                    secCodec[i] = codec;
                 }
             }
         }
@@ -616,8 +783,7 @@ bool packLevel(const LevelData& level, std::vector<uint8_t>& out, std::string& e
         const std::vector<uint8_t>& st = stored[i];
         SectionEntry e{};
         e.id = s.id;
-        e.codec = (!s.preStored && st.size() < s.blob.size()) ? (uint8_t)Codec::SectionZstd
-                                                             : (uint8_t)Codec::Raw;
+        e.codec = (!s.preStored && st.size() < s.blob.size()) ? secCodec[i] : (uint8_t)Codec::Raw;
         e.flags = s.flags;
         e.offset = off;
         e.compSize = st.size();

@@ -20,6 +20,16 @@ add_library(adofai_archive STATIC
     AdocaoWriter.cpp
     # `.adocao` 读取方（unpack）：填 LevelData 但不做收尾（收尾与两条 JSON 路径共用）
     AdocaoReader.cpp
+    # **v7 事件库**：自描述的 EventSchema + EventColumns（把 v6 会丢的类型也存下来）。
+    # 四个文件是一套：Kinds（字段种类）→ Schema（类型/字段描述）→ EventColumns（列编解码）
+    # → JsonWriter（`.adocao` 回写成 `.adofai`，即上游版的"导出"）。
+    AdocaoKinds.cpp
+    AdocaoSchema.cpp
+    AdocaoEventColumns.cpp
+    # 上游的 `.adocao` → `.adofai` 回写。**只对带 v7 段的文件有效**（它按 schema 解出原始事件
+    # JSON），没有 v7 段会明确报错。库的 ADOFAI::export 在有 v7 段时优先用它（无损），
+    # 否则退回库自己的写方（按建模字段写）。
+    AdocaoJsonWriter.cpp
     # v3 的 `Derived` 段：每 4096 层的续算快照。要建一次 Timeline 才拿得到 timeSec/bpm
     # —— 用权威实现，不重抄状态机（所以它额外依赖 core/timeline，archive 本来就 PUBLIC 依赖 core）。
     AdocaoCheckpoints.cpp

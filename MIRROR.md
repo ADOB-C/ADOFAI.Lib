@@ -294,6 +294,34 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 `#if defined(_MSC_VER)` 的 `_BitScanForward` 分支（4 行），向量后端继续只认 GCC/Clang。
 其余部分（`_M_X64` 的 SSE2 分支）确实可以不保留 —— 那只是"MSVC 上少了向量加速"，不致命。
 
+### 第八次对齐（85ca708，32 个提交）：上游终于有了自己的"写方"
+
+`.adocao` 升到 **v7**：自描述的 `EventSchema` + `EventColumns`（外加 EventIndex / 事件窗口 /
+直接解码），于是 v6 会整体丢的类型（装饰物、未知 eventType）也能无损存进容器。配套新增
+`archive/AdocaoJsonWriter`：`writeLevelJson(lv, out, err)` —— **`.adocao`(v7) → `.adofai` 的无损回写**。
+
+这跟库自有的 `ADOFAI::export` 是**两个东西**，但也确实重叠了：
+
+| | 上游 `AdocaoJsonWriter` | 库 `ADOFAI::export` |
+|---|---|---|
+| 输入 | 必须来自带 v7 段的 `.adocao` | **任意** `LevelData`（`.adofai`/`.xz`/`.zst`/`.adocao`）|
+| 保真 | **无损**（原始事件 JSON + `rawSettingsJson`）| 建模字段（+ 五类富事件）|
+| 输出 | 只有明文 JSON | `.adofai` / `.xz` / `.zst` / `.adocao` |
+
+库这边的处理是**分层**而不是二选一：`writeTo()` 发现 `v7SchemaBytes`/`v7ColumnsBytes` 非空
+就用上游的写方（无损），否则用库自己的。`canExport()` 同理 —— 有 v7 段时连 ScaleRadius 都能写
+（它本来就在原始事件里），没有 v7 段时才因为"上游没留原始事件"拒绝。
+
+实测（`ctest export_roundtrip` 新增一段）：`preserveRawJson = true` 读谱 →
+`pack(withV7Events, v7IncludeLegacy)` → 读回来 → 导出 `.adofai` →
+**`UnknownType` 被保留**；而且 settings 原样是 `{"bpm": 150}`（不会被补成 29 个建模键）。
+
+⚠️ **两个 API 细节，踩过才知道**：
+* 捕获原始成员要**先** `level.preserveRawJson = true` 再 `loadFromFile` —— 默认是 `false`
+  （那是有内存/时间成本的），关了就打不出 v7 段。
+* `pack` 的 `withV7Events` 默认**只写"v6 存不下的类型"**（去重）。要能回写就必须
+  `v7IncludeLegacy = true`（不去重）。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

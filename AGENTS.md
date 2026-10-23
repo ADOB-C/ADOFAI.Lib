@@ -7,7 +7,9 @@
 `ADOFAI.Lib` —— 从 ADOCAO（本体，`../ADOCAO`）**单向镜像**出来的可分发包：
 解析 `.adofai` → 时间线/解算 → 打拍音 → 可选渲染 → 可选导出。6 个模块（core / archive /
 **export** / audio / audio_device / render），其中 render 与 audio_device 默认 OFF，
-export 是**库自有**的（上游刻意不做导出，所以它没有对应物）。
+export 是**库自有**的。注意 2026-10-22 之后上游也有了 `archive/AdocaoJsonWriter`（`.adocao`
+v7 → `.adofai` 的**无损**回写，依赖自描述事件段）；库的导出模块因此分两层：
+有 v7 段时**优先用它**（无损），否则用库自己的写方（按建模字段写，覆盖任意来源的 LevelData）。
 
 ## 三条硬规矩
 
@@ -16,8 +18,9 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
    库自己的文件是：`CMakeLists.txt`、`src/**/CMakeLists.txt`、`cmake/*.cmake*`、
    `examples/**`、`tests/check_*.py`、`tests/data/**`、文档、`.github/**`，
    以及**唯一的例外 `src/adofai/export/**`** ——
-   那是库自有的导出模块（ADOCAO 刻意不做导出，所以它没有上游对应物，
-   靠 `ctest -R export` 自己守漂移；细节见 [CONTRIBUTING.md](CONTRIBUTING.md) §2）。
+   那是库自有的导出模块（上游只有一个"从 v7 容器无损回写"的写方，没有"任意来源 → 四种格式"
+   的导出；库自己的写方仍无上游对应物，靠 `ctest -R export` 守漂移；细节见
+   [CONTRIBUTING.md](CONTRIBUTING.md) §2）。
 2. **入库文件里绝不出现机器绝对路径**（ADOCAO 为此重写过 352 个提交的历史）。
    本机资源走环境变量或 `~/` 相对形式。提交前自检（应为空）：
    ```bash
@@ -62,8 +65,8 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 4. **本地只跑两格**（默认 + render=ON）。其余 6 格**交给 CI** —— CI 那 10 格把它们全覆盖了，
    本地再跑一遍是重复劳动（8 格全量约 5–6 分钟，两格约 1.5 分钟）：
    ```bash
-   ctest --test-dir build            # 默认：36/36
-   ctest --test-dir build-render     # render=ON：41/41（含三层几何 + shader 一致性 + 导出）
+   ctest --test-dir build            # 默认：41/41
+   ctest --test-dir build-render     # render=ON：46/46（含三层几何 + shader 一致性 + 导出）
    ```
    `build-render` 由 `bash build/matrix.sh render` 建（也接受多个配置名，产物在 `build-*/`，
    已 gitignore）。**只有改了 install/export/选项矩阵/CI 本身时**才值得本地多跑几格 ——
@@ -85,11 +88,11 @@ export 是**库自有**的（上游刻意不做导出，所以它没有对应物
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `5524ee6`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `85ca708`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
-- 测试：render=OFF **36/36**、render=ON **41/41**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
+- 测试：render=OFF **41/41**、render=ON **46/46**；CI 10 格全绿（三平台 + 选项矩阵 + render ON/OFF）。
 - **GPU 逐位那一层在 CI 上跑不了**：Ubuntu/macOS runner 都没有 GL 上下文，`geom_probe` 会
   打印 `SKIP` 退 0。workflow 里有一步专门**报告**它跑没跑 —— 别把"绿"当成"GPU 验过了"。
 - 还没做：**像素门槛**（`capture-gate.sh` 的 50 状态逐字节）没搬 —— 它要跑本体 app 抓帧，

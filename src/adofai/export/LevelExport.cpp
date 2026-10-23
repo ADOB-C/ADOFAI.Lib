@@ -12,6 +12,7 @@
 #include "export/LevelJsonWriter.hpp"
 
 #ifdef ADOFAI_LIB_EXPORT_HAVE_ARCHIVE
+#  include "archive/AdocaoJsonWriter.hpp"   // 上游的 `.adocao`(v7) → `.adofai` 无损回写
 #  include "archive/AdocaoReader.hpp"
 #  include "archive/AdocaoWriter.hpp"
 #  include "archive/LevelArchive.hpp"
@@ -226,6 +227,33 @@ bool writeTo(Format f, const LevelData& level, std::vector<uint8_t>& out, std::s
         }
     }
     std::string json;
+#ifdef ADOFAI_LIB_EXPORT_HAVE_ARCHIVE
+    // 有 v7 事件段（从上游 `adocao pack --v7-all` 打出来的 `.adocao` 读进来的）时，
+    // **优先用上游的写方**：它按 schema 把原始事件 JSON 原样吐回来，连 decorations、
+    // 未知 eventType、以及 rawSettingsJson 里我们没建模的 settings 键都不丢。
+    // 这条路失败就**直接失败**，不退回建模写方 —— 那会把"无损"悄悄降级。
+    if (!level.v7SchemaBytes.empty() && !level.v7ColumnsBytes.empty()) {
+        if (!adocao::writeLevelJson(level, json, err)) {
+            if (err.empty()) err = "writeLevelJson 失败（v7 事件段回写）";
+            return false;
+        }
+        rep.jsonBytes = json.size();
+        if (f == Format::Adofai) {
+            out.assign(json.begin(), json.end());
+            rep.bytes = out.size();
+            if (opt.verify) {
+                LevelData back;
+                if (!back.loadFromBuffer(json.data(), json.size(), nullptr, /*exportOnly=*/true)) {
+                    out.clear();
+                    err = "自检失败：v7 无损回写的 .adofai 自己解析不了";
+                    return false;
+                }
+            }
+            if (report) *report = rep;
+            return true;
+        }
+    } else
+#endif
     if (!writeJson(level, json, err)) return false;
     rep.jsonBytes = json.size();
 
