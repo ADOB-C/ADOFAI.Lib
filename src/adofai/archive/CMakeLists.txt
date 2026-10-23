@@ -26,11 +26,9 @@ add_library(adofai_archive STATIC
     AdocaoKinds.cpp
     AdocaoSchema.cpp
     AdocaoEventColumns.cpp
-    # ⚠️ `AdocaoJsonWriter.cpp` **故意不编**：上游 2026-10-22 把它从 `archive/` 挪进了
-    # `tests/`（只作它自己"容器往返验证"的测试工具），而且库这边已经自己实现了一份
-    # （`src/adofai/export/LevelV7Json.cpp`）。文件现在还在镜像树里（HEAD 尚未提交那次移动），
-    # 但不进构建 —— 这样上游提交后 rsync --delete 把它删掉时，这里不会因为"找不到源文件"
-    # 在配置期报错。等下一次对齐确认它已消失，这段注释也可以删。
+    # 注：`AdocaoJsonWriter.cpp` **不在这里** —— 上游 2026-10-22 把它从 `archive/` 挪进了
+    # `tests/`（只作它自己"容器往返验证"的测试工具；ADOCAO 不做导出功能）。库这边自己实现了
+    # 一份等价的无损回写：`src/adofai/export/LevelV7Json.cpp`。
     # v3 的 `Derived` 段：每 4096 层的续算快照。要建一次 Timeline 才拿得到 timeSec/bpm
     # —— 用权威实现，不重抄状态机（所以它额外依赖 core/timeline，archive 本来就 PUBLIC 依赖 core）。
     AdocaoCheckpoints.cpp

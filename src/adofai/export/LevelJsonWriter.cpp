@@ -1,6 +1,8 @@
 #include "export/LevelJsonWriter.hpp"
 
+#include <algorithm>   // std::stable_sort（putRichEvents 按 order 排序）—— MinGW 不隐式带
 #include <cmath>
+#include <cstdio>      // std::snprintf（错误信息与 hex 颜色）—— 同上
 #include <cstring>
 
 #include "core/level/LevelData.hpp"

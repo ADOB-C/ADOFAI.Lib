@@ -5,9 +5,27 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=8407089
-ADOCAO_COMMIT_FULL=8407089f4983d1564f6a61576a7e554e18728db9
+ADOCAO_COMMIT=9572eff
+ADOCAO_COMMIT_FULL=9572effa3a7dc373eaf579e974df3bc5c3cbca83
 ADOCAO_COMMIT_DATE=2026-10-22
+# 本次同步要点（4 个提交；223 个镜像文件逐字节一致）：
+#
+#  1. **上游把那个回写器彻底移出 archive/**（`918333a refactor: ADOCAO 不再有任何导出功能；
+#     回写器搬进 tests/，对外规范写 docs/adocao-export.md`）。→ 镜像树里
+#     `archive/AdocaoJsonWriter.{hpp,cpp}` 已被删除；库这边上一轮就已经改成自己实现
+#     （`src/adofai/export/LevelV7Json.cpp`）并且没把它列进构建，所以这次配置期没受影响。
+#  2. **两笔"小修复"**：`7b5dbbd`/`9572eff` 补 4 处漏掉的标准库头（`<algorithm>` 的 std::sort、
+#     `<cstring>`、`<cstdio>` 的 std::snprintf），其中 `render/TileMesh.cpp` 正是镜像文件。
+#     还加了 `scripts/check-std-includes.sh` 守卫（扫 core/archive/render/audio/app/tests）。
+#  3. **同一类问题本库自己也犯了**：`src/adofai/export/LevelJsonWriter.cpp` 用了
+#     `std::stable_sort` 却没 include `<algorithm>` —— mac 上被 libc++ 的间接包含救了，
+#     CI 的 **windows-default(MinGW) 直接报 'stable_sort' is not a member of 'std'**。
+#     → 已补 `<algorithm>`/`<cstdio>`，并新增**库自有**的守卫 `tests/check_std_includes.py`
+#     （只查库自有文件：镜像来的不许手改，上游有自己的守卫），挂成 ctest `std_includes`。
+#     负向对照已验：去掉 `<algorithm>` 立刻报那一行。
+#
+# 上一次同步：85ca708（`.adocao` v7 自描述事件库 + 上游那份 debug 回写器）。
+
 # 本次同步要点（32 个提交，镜像区 17 个文件改动；223 个镜像文件逐字节一致）：
 #
 #  1. **`.adocao` 升到 v7**：自描述的 `EventSchema` + `EventColumns`（+ EventIndex、事件窗口、

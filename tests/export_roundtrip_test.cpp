@@ -364,6 +364,25 @@ int main(int argc, char** argv)
                                 fail("v7 无损回写", "导出的 .adofai 里没有 UnknownType —— 无损路径没生效");
                             else
                                 std::printf("OK    v7 段无损回写（未知 eventType 被保留）\n");
+
+                            // **最强的无损证据**：容器 → 明文 → 重新打包，两个容器必须**逐字节相同**
+                            // （比逐字段比对更强：任何顺序/格式差异都会让字节不同）。
+                            LevelData rt;
+                            rt.preserveRawJson = true;
+                            if (!rt.loadFromFile(out)) {
+                                fail("v7 无损回写", "再把导出的明文读回来时失败");
+                            } else {
+                                std::vector<uint8_t> again;
+                                std::string e3;
+                                if (!adofai::adocao::packLevel(rt, again, e3, nullptr, opts))
+                                    fail("v7 无损回写", "重打包失败：" + e3);
+                                else if (again != bytes)
+                                    fail("v7 无损回写", "容器 → 明文 → 重打包**不是逐字节相同**"
+                                                        "（导出丢了顺序或字段）");
+                                else
+                                    std::printf("OK    v7 往返：容器 → 明文 → 重打包逐字节相同"
+                                                "（%zu B）\n", again.size());
+                            }
                         }
                     }
                 }

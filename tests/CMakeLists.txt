@@ -253,6 +253,17 @@ add_executable(adofai_camera_test camera_test.cpp)
 target_link_libraries(adofai_camera_test PRIVATE ADOFAI::core)
 add_test(NAME camera COMMAND adofai_camera_test)
 
+# 标准库头缺失守卫：用了 std::stable_sort / std::snprintf / std::filesystem … 就必须**直接**
+# include 对应的头。libc++ 常经由别的头间接带进来（macOS 绿），MinGW / libstdc++ 直接报错 ——
+# 2026-10-22 的 windows-default 就是 `src/adofai/export/LevelJsonWriter.cpp` 缺 <algorithm> 炸的。
+# 只查**库自有**的文件（镜像来的不许手改，上游有同款守卫）。
+if(Python3_Interpreter_FOUND)
+    add_test(NAME std_includes
+        COMMAND ${Python3_EXECUTABLE}
+                "${CMAKE_CURRENT_SOURCE_DIR}/check_std_includes.py"
+                "${CMAKE_SOURCE_DIR}")
+endif()
+
 # 事件字段的"直灌"路径（列 → EventFieldValue → ingestEventFields，不经 JSON）。只链 core。
 add_executable(adofai_adocao_direct_fields_test adocao_direct_fields_test.cpp)
 target_link_libraries(adofai_adocao_direct_fields_test PRIVATE ADOFAI::core)

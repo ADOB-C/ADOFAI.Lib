@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>   // std::to_string（错误信息）
 
 #include "core/level/LevelData.hpp"
 #include "export/LevelEncode.hpp"

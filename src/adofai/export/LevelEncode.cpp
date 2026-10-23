@@ -1,6 +1,7 @@
 #include "export/LevelEncode.hpp"
 
 #include <limits>
+#include <string>   // std::to_string（错误信息）—— 别依赖头文件间接带进来
 
 #ifdef ADOFAI_LIB_EXPORT_HAVE_ARCHIVE
 #  include <lzma.h>    // archive 的 PRIVATE 依赖；export 自己也要链（静态库不传递依赖）
