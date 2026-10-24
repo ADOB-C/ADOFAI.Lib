@@ -10,7 +10,9 @@ add_library(adofai_render STATIC
     TileShape.cpp
     TileMesh.cpp
     Planet.cpp
-    PlanetTrail.cpp)
+    PlanetTrail.cpp
+    # 场景组装（相机 / 剔除 / 绘制顺序的**无 GL 部分**），2026-10-23 上游从 app 挪进 render。
+    LevelScene.cpp)
 
 target_include_directories(adofai_render
     PUBLIC  "$<BUILD_INTERFACE:${ADOFAI_LIB_SRC_ROOT}>"

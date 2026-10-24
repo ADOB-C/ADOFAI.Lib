@@ -30,6 +30,8 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 - **时间线**：逐层起始时刻、时长、BPM 传播、中旋砖（`angleData = 999`）、SetSpeed/Twirl
 - **相机系统**：MoveCamera / RepeatEvents 的富事件 → 关键帧 → 采样（`core/camera/`，
   纯计算不碰 GL），也提供 `camera` / `camera_timeline` / `camera_zoom` 三条金标测试
+- **场景组装**：`render/LevelScene`（相机 / 剔除 / 绘制顺序的**无 GL 部分**）——
+  2026-10-23 从本体 app 挪进 `render/`，所以库这边也能直接用
 - **砖色与闪屏**：trackStyle 的 fill/stroke 派生、ColorTrack/RecolorTrack 的补间、
   Flash 的全屏闪屏（`core/level/TileColor`、`render/` 的 `flash` 着色器）
 - **解析的结构扫描走 SIMD**：`core/level/JsonScan.hpp` 用整块掩码找结构字节（引号/括号），

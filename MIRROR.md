@@ -337,6 +337,31 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 * `pack` 的 `withV7Events` 默认**只写"v6 存不下的类型"**（去重）。要能回写就必须
   `v7IncludeLegacy = true`（不去重）。
 
+### 第九次对齐（d4e8219，41 个提交）：TIFF 出图（不进库）、场景组装挪进 render
+
+* **`render/LevelScene.{hpp,cpp}` + `SceneConfig.hpp`**：场景组装（相机 / 剔除 / 绘制顺序的
+  **无 GL 部分**）从 `app/` 挪进了 `render/` —— 于是它进了镜像，库的 render 目标要加
+  `LevelScene.cpp`（已加）。这是"上游把 app 里的纯逻辑往下沉"的又一步，方向对库有利。
+* **TIFF 出图**：`core/map/TiffWriter.{hpp,cpp}` + `tests/tiff_writer_test.cpp`。
+  **`core/map/**` 是排除目录**（PLAN §3：出图留在本体），所以这两个都不镜像 —— 库里的
+  `tests/` 也就不会挂 `tiff_writer`。这不是漏，是边界。
+* `archive/{AdocaoColumns,AdocaoWriter}`、`audio/AudioEngine`、`core/camera/CameraDirector.hpp`、
+  `render/{TileGeometryReference,TileMesh.hpp,TileShape.hpp}` 同步；`adocao_blocked_test.cpp` 改了
+  断言（分段列**必须**选分块），已跟着拷。
+
+**这轮我自己踩的两个坑（都记在 AGENTS/SYNCED_AT 里）**：
+
+1. **漏拷被修改的测试源码**：只 rsync 了 5 个目录 + 夹具，没跑 `for f in …` 那份清单，于是
+   `tests/adocao_blocked_test.cpp` 还是旧的，而 `archive/*` 已经是新的 → `adocao_blocked` 两条
+   断言红（"分段列应当选分块"）。**对账会抓到它**（旧副本与 HEAD 逐字节不同 → DIFF），
+   所以对账要在跑测试**之前或至少提交之前**跑。
+2. `std_includes` 守卫**在 Windows 上自己红了**：脚本最后那句 `print(f"OK: …（…）")` 带中文，
+   cp1252 控制台抛 `UnicodeEncodeError`。其它 `check_*.py` 早就有 `sys.stdout.reconfigure`
+   前置，这个新脚本漏了。已补，并用 `PYTHONIOENCODING=cp1252` 验过两条输出路径（成功与报错）。
+
+顺带一提：上游这轮加了 `scripts/check-gcc.sh`（推之前用真 GCC 全量语法检查）——
+和我的 `std_includes` 守卫是同一类补丁，只是他们走编译器、我走静态扫描。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

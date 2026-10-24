@@ -5,9 +5,29 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=9572eff
-ADOCAO_COMMIT_FULL=9572effa3a7dc373eaf579e974df3bc5c3cbca83
-ADOCAO_COMMIT_DATE=2026-10-22
+ADOCAO_COMMIT=d4e8219
+ADOCAO_COMMIT_FULL=d4e8219e161bc3619560e53d1870496a9623e5af
+ADOCAO_COMMIT_DATE=2026-10-24
+# 本次同步要点（41 个提交；224 个镜像文件逐字节一致）：
+#
+#  1. **`render/LevelScene.{hpp,cpp}` + `SceneConfig.hpp` 从 app/ 挪进 render/**（场景组装的
+#     无 GL 部分）→ 进了镜像；库的 render 目标已加 LevelScene.cpp。
+#  2. `archive/{AdocaoColumns,AdocaoWriter}`、`audio/AudioEngine`、`core/camera/CameraDirector.hpp`、
+#     `render/{TileGeometryReference,TileMesh.hpp,TileShape.hpp}` 同步；`adocao_blocked_test.cpp`
+#     的断言改了（分段列必须选分块），已跟着拷。
+#  3. **TIFF 出图不进库**：`core/map/TiffWriter.*` 与 `tests/tiff_writer_test.cpp` 都在
+#     `core/map/**`（PLAN §3 的排除目录）里 —— 所以库里不挂 `tiff_writer`，这是边界不是漏。
+#  4. 上游新增 `scripts/check-gcc.sh`（推之前用真 GCC 全量语法检查）—— 与库的 `std_includes`
+#     守卫同类；库这边不镜像（scripts/ 不在白名单）。
+#
+# 这轮踩的两个坑（都已修/已写进 AGENTS）：
+#   * **漏拷被修改的测试源码**：只 rsync 目录、没跑测试清单 → `adocao_blocked` 用旧断言撞新代码
+#     而红。对账能抓到（旧副本与 HEAD 不同 → DIFF），所以对账要在提交前跑。
+#   * **`std_includes` 守卫自己在 Windows 红**：末尾那句中文 print 撞 cp1252。其它 check 脚本
+#     早有 reconfigure 前置，新脚本漏了；已补并用 PYTHONIOENCODING=cp1252 验过成功/报错两条路径。
+#
+# 上一次同步：9572eff（补 4 处标准库头 + 上游的 std-includes 守卫）。
+
 # 本次同步要点（4 个提交；223 个镜像文件逐字节一致）：
 #
 #  1. **上游把那个回写器彻底移出 archive/**（`918333a refactor: ADOCAO 不再有任何导出功能；

@@ -59,6 +59,9 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
 1. `git -C ../ADOCAO log -1 --oneline`（工作区必须是干净的）；
 2. 按 [CONTRIBUTING.md](CONTRIBUTING.md) 第 3 节的白名单从**上游 HEAD 快照**镜像（`git archive`，
    **不是**直接 rsync 工作区 —— 上游经常有未提交的改动，直接 rsync 会把它们拽进库里），更新 `SYNCED_AT`；
+   **那份 `for f in …` 的测试源码清单要整份跑**（不只是 rsync 目录）：上游改了某个 `tests/*_test.cpp`
+   的断言时，只 rsync 目录会让库里的旧副本与新的 `archive/` 代码对不上 —— 2026-10-24 的
+   `adocao_blocked` 就是这么红的；
    rsync 那几条**必须带 `--exclude='map/'` 与 `--delete`**：前者挡上游的 `core/map/**`
    （出图，不进库；2026-10 踩过一次），后者处理"上游删了文件"（删过 `assets/shaders/icon.*`、
    `core/util/ThreadPool.*`）；
@@ -89,12 +92,15 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `9572eff`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `d4e8219`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
 - 测试：render=OFF **42/42**、render=ON **47/47**；CI 10 格（三平台 + 选项矩阵 + render ON/OFF）。
-  最近一次红是 `windows-default` 缺 `<algorithm>`（2026-10-22，已修，并加了 `std_includes` 守卫）。
+  最近两次红都在 `windows-default` 且都是**库自有代码**的问题（镜像代码本身没红过）：
+  * 2026-10-22 `LevelJsonWriter.cpp` 缺 `<algorithm>`（`std::stable_sort`）→ 已修并加守卫；
+  * 2026-10-23 `std_includes` 守卫**自己**在 Windows 红（中文 print 撞 cp1252）→ 已补
+    `sys.stdout.reconfigure`，并用 `PYTHONIOENCODING=cp1252` 验过。
 - **GPU 逐位那一层在 CI 上跑不了**：Ubuntu/macOS runner 都没有 GL 上下文，`geom_probe` 会
   打印 `SKIP` 退 0。workflow 里有一步专门**报告**它跑没跑 —— 别把"绿"当成"GPU 验过了"。
 - 还没做：**像素门槛**（`capture-gate.sh` 的 50 状态逐字节）没搬 —— 它要跑本体 app 抓帧，

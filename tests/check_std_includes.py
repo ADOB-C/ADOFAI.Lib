@@ -17,6 +17,15 @@ import re
 import sys
 from pathlib import Path
 
+# Windows 控制台默认不是 UTF-8（cp1252/cp936），直接 print 非 ASCII 会抛 UnicodeEncodeError
+# —— 2026-10-23 CI 的 windows-default 就是这条守卫自己红了（其余 check_*.py 早就有这段，
+# 这个新脚本漏了）。放最前面，让所有输出路径（含报错）都不会炸。
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # (用法的正则, 需要 include 的头, 说明)
 RULES = [
     (r"std::(?:stable_)?sort\s*[<(]", "<algorithm>", "std::sort"),
