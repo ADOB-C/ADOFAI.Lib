@@ -429,6 +429,61 @@ int main(int argc, char** argv)
     }
 #endif
 
+#ifdef ADOFAI_EXPORT_TEST_HAVE_ARCHIVE
+    // ── ScaleRadius：建模层没有它，但 **v7 段有**（上游 2026-10-29 按本库的反馈改的）──────
+    // 链路：`.adofai`（带 ScaleRadius）→ `packV7` 打成 `.adocao` → 读回来 → 无损回写 `.adofai`，
+    // 那条事件必须**逐字还在**。这是"上游修了什么、我们这边能不能用上"的端到端证据。
+    {
+        std::string pick;
+        for (int ai = 2; ai < argc && pick.empty(); ++ai) {
+            const std::vector<char> raw = readRawFile(argv[ai]);
+            if (std::string(raw.begin(), raw.end()).find("ScaleRadius") != std::string::npos)
+                pick = argv[ai];
+        }
+        if (pick.empty()) {
+            std::printf("SKIP  ScaleRadius 无损回写（这批输入里没有含它的谱）\n");
+        } else {
+            LevelData a;
+            a.preserveRawJson = true;          // v7 段要原始切片
+            std::string err;
+            if (!a.loadFromFile(pick)) {
+                fail("ScaleRadius 无损回写", "加载失败：" + pick);
+            } else if (!a.hasScaleRadiusEvents()) {
+                fail("ScaleRadius 无损回写", "解析后并没有识别出 ScaleRadius 事件");
+            } else {
+                exporter::Options o;
+                o.packV7 = true;
+                const std::string cont = outDir + "/sr.adocao";
+                if (!exporter::exportLevel(a, exporter::Format::Adocao, cont, err, o)) {
+                    fail("ScaleRadius 无损回写", "打成 v7 容器失败：" + err);
+                } else {
+                    LevelData b;
+                    if (!b.loadFromFile(cont) || b.v7SchemaBytes.empty()) {
+                        fail("ScaleRadius 无损回写", "v7 容器读回来没有 v7 段");
+                    } else if (!exporter::canExport(b)) {
+                        fail("ScaleRadius 无损回写", "有 v7 段时 canExport 却说不能写");
+                    } else {
+                        const std::string out = outDir + "/sr.adofai";
+                        if (!exporter::exportLevel(b, exporter::Format::Adofai, out, err)) {
+                            fail("ScaleRadius 无损回写", "无损回写失败：" + err);
+                        } else {
+                            const std::vector<char> got = readRawFile(out);
+                            const std::string txt(got.begin(), got.end());
+                            LevelData back;
+                            if (txt.find("ScaleRadius") == std::string::npos)
+                                fail("ScaleRadius 无损回写", "回写的明文里没有 ScaleRadius 事件");
+                            else if (!back.loadFromFile(out) || !back.hasScaleRadiusEvents())
+                                fail("ScaleRadius 无损回写", "回写的明文读回来没有 ScaleRadius 事件");
+                            else
+                                std::printf("OK    ScaleRadius：v7 容器 → 明文，事件原样还在\n");
+                        }
+                    }
+                }
+            }
+        }
+    }
+#endif
+
     // ── 2026-10-24 新增的两个模型字段（没有夹具覆盖，只能手搓）──────────────
     // 1) PositionTrack 的 `stickToFloors` 三态 —— 上游把它塞进 `strId2`（0=关 1=开 2=没写），
     //    不是字符串；导出必须写回，否则"轨道飘走、行星不跟"这条语义就丢了。

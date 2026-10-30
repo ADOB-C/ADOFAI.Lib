@@ -189,9 +189,12 @@ if (!adofai::exporter::exportLevel(level, "out.adocao", err, adofai::exporter::O
   MoveTrack 在 2026-10-18 起搬进了富结构（`cameraEvents` 等），导出模块按各自 `order` 把它们
   写回 `actions` —— 字段级逐位往返（含 ease 名字、relativeTo、disabled/flags、`"Start+3"` 这种
   层引用、透明度/缩放的 ×100 归一化），由 `ctest export_roundtrip` 对五个夹具逐一钉住。
-* ⚠️ **唯一的例外是 ScaleRadius**：上游解析它时就把结果烘进 `tiles[i].position`、**原始事件一个
-  字段都没留**（`.adocao` 也不存它）。这种谱 `exportLevel` 会**明确拒绝**写明文
-  （`canExport()` 可以先问），并说明原因 —— 绝不静默写出一个少了事件的文件。
+* ⚠️ **`ScaleRadius` 在"建模层"里不存在**：上游解析它时只把 scale 烘进 `tiles[i].position`，
+  事件本身的字段没留下来 —— 所以**没有 v7 段**的谱 `exportLevel` 会**明确拒绝**写明文
+  （`canExport()` 可以先问，报错里也写了出路），绝不静默写出一个少了事件的文件。
+  出路是 v7：读谱时 `preserveRawJson = true`、打包时 `Options::packV7 = true`，
+  v7 事件段会原样留下这条事件的 JSON，回写就是无损的（上游 2026-10-29 按本库的反馈改的，
+  端到端用例见 `ctest export_roundtrip` 里的 "ScaleRadius：v7 容器 → 明文"）。
 
 要**无损回写**（连未知成员一起保留）现在做不到 —— 那要等上游的 `Preserved` 段
 （[ADOCAO](https://github.com/ADOB-C/ADOCAO) 的 TODO ⑦）。`.adocao` 的完整格式规范

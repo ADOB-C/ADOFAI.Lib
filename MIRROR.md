@@ -387,6 +387,24 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 为了让后两件能被"看见"，`export_roundtrip` 加了一段**手搓 LevelData**：三种 stick 取值 +
 一个 `MultiPlanet(3)`，导出再解析，断言三态与星数都原样回来。
 
+### 上游按本库的反馈修了三条（9893fdd，2026-10-29）
+
+报上去的三条都修了，其中一条直接解开本库导出的限制：
+
+1. **`ScaleRadius` 的原始事件进 v7 段**（commit 里就写着 "ADOFAI.Lib 的导出被它卡住"）：
+   它不再算进"v6 段已有"的去重集合，于是 `packV7` 的容器里会原样保存这条事件的 JSON
+   （每条 ~60 B，全谱 40 条约 2.4 KB）。**本库因此可以无损回写含 ScaleRadius 的谱了** ——
+   条件是有 v7 段；建模层依然没有它，所以没有 v7 段时仍然明确拒绝（`canExport` 的报错现在
+   会告诉你"读谱时 `preserveRawJson=true`、打包时 `Options::packV7=true`"）。
+2. **`AdocaoWindow.cpp` 的 `b / 0 * 0`（UB）**：加了 `blockElems == 0` 的守卫，注释里点名
+   正是本库告警里那条。
+3. **`-Wswitch`**：`Codec` 多了 `FixedPointDelta` 的 `case`（顺带把没用到的 `ks2` 删了）。
+
+端到端用例（本库自己的，不用上游那份 `AdocaoJsonWriter`）：`f43_scale_radius.json` →
+`packV7` 打成 `.adocao` → 读回来 → 无损回写成 `.adofai` → 明文里 `ScaleRadius` 还在、
+再解析一次仍然识别得出。上游那份 `scale_radius_raw_test.cpp` **不镜像**（它链 `AdocaoJsonWriter.cpp`，
+而那个文件只活在它自己的 `tests/` 里）。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

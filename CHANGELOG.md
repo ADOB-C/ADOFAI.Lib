@@ -29,8 +29,9 @@ OFF 那侧是一条承诺：不 `find_package`、公共头里没有它的类型�
 * 四种格式，都走同一条原子落盘（`.tmp` → rename）；
 * **`Options::verify` 默认开** —— 写完立刻自己解回来验，绝不产出"自己读不回来"的文件；
   `.adofai` 比建模指纹，`.adocao` 比"再打一次包是否逐字节相同"，压缩格式比解压后逐字节相同；
-* **不可表示的内容明确拒绝**（`canExport()` 可以先问）而不是静默丢：目前只剩 `ScaleRadius`
-  —— 上游解析它时就把结果烘进了砖位、原始事件一个字段都没留；
+* **不可表示的内容明确拒绝**（`canExport()` 可以先问）而不是静默丢：建模层里只剩 `ScaleRadius`
+  —— 上游解析它时只把 scale 烘进砖位，事件字段没留（开 `packV7` 时 v7 事件段会原样保存它，
+  回写就无损）；
 * 五类"富事件"（MoveCamera / RepeatEvents / ColorTrack+RecolorTrack / Flash / MoveTrack）与
   `MultiPlanet`、`PositionTrack` 的粘性三态都能写回；
 * **带 v7 事件段的 `.adocao` 可以无损回写成 `.adofai`**（库自己的 `writeV7Json`）：
@@ -50,7 +51,7 @@ OFF 那侧是一条承诺：不 `find_package`、公共头里没有它的类型�
 
 ### 已知限制
 
-* `ScaleRadius` 不能写明文（上游没留原始数据）；
+* `ScaleRadius` 在**没有 v7 段**时不能写明文（建模层没留原始事件）；`packV7` 打包的容器可以；
 * 第三方依赖的头与库**会进消费者前缀**（`ARCHIVE`/`RENDER` 为 ON 时）；根因是静态库不传递依赖，
   试过的机制记在 [MIRROR.md](MIRROR.md)；
 * 像素门槛（50 状态逐字节）没搬 —— 属本体验收；

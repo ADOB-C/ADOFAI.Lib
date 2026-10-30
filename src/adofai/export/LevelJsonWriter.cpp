@@ -598,9 +598,10 @@ bool canExport(const LevelData& level, std::string* why)
     // 现在都由 `putRichEvents()` 按各自 `order` 写回 actions。
     if (!level.hasScaleRadiusEvents()) return true;
     if (why) {
-        *why = "这份谱含 ScaleRadius 事件 —— 上游解析时只把结果烘进砖位、**原始事件一个字段都没留**，"
-               "所以没有 `.adofai` 的 JSON 表示（`.adocao` 也不存它）。这不是本模块的缺口，"
-               "要能导出就得先在上游把那条事件的数据留下";
+        *why = "这份谱含 ScaleRadius 事件：**建模层没有它**（上游解析时只把 scale 烘进砖位），"
+               "所以没有 `.adofai` 的 JSON 表示。两个出路：① 读谱时 `preserveRawJson = true`、"
+               "打包时 `Options::packV7 = true`（v7 事件段会**原样**留下这条事件的 JSON，"
+               "回写就是无损的）；② 换成 `.adocao` 输出，同样要开 `packV7`";
     }
     return false;
 }
