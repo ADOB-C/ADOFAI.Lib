@@ -132,6 +132,7 @@ bool putAction(Writer& w, const LevelData& level, const T& a, std::string& err)
     case T::Bookmark:      w.String("Bookmark"); break;
     case T::Pause:         w.String("Pause"); break;
     case T::AnimateTrack:  w.String("AnimateTrack"); break;
+    case T::MultiPlanet:   w.String("MultiPlanet"); break;
     case T::Other:
         err = "内部错误：Other 类型的 action 不该出现在 LevelData.actions 里（解析期就丢了）";
         return false;
@@ -159,6 +160,9 @@ bool putAction(Writer& w, const LevelData& level, const T& a, std::string& err)
         if (!putF(w, a.val2, err, "PositionTrack.positionOffset[1]")) return false;
         w.EndArray();
         w.Key("justThisTile"); w.Bool(a.flag);
+        // 粘性开关（2026-10-24 上游新增）：三态放在 `strId2` 里 —— 0=关、1=开、2=事件没写。
+        // 只有"写过"才写回这个键（写了 false 也是"s 写过"），否则会把它变成显式默认而改变继承语义。
+        if (a.strId2 != 2) { w.Key("stickToFloors"); w.Bool(a.strId2 == 1); }
         break;
     case T::SetHitsound:
         w.Key("hitsound"); w.String(str.c_str(), (rapidjson::SizeType)str.size());
@@ -166,6 +170,10 @@ bool putAction(Writer& w, const LevelData& level, const T& a, std::string& err)
             w.Key("hitsoundVolume");
             if (!putF(w, a.val1, err, "SetHitsound.hitsoundVolume")) return false;
         }
+        break;
+    case T::MultiPlanet:
+        // 星数（2..8）。解析侧接受 `"ThreePlanets"` / `"3"` / `3`，这里写数字最稳。
+        w.Key("planets"); w.Int((int)a.val1);
         break;
     case T::AnimateTrack:
         if (a.strId != 0) {
@@ -204,6 +212,7 @@ struct Digest {
         for (size_t i = 0; i < n; ++i) { h ^= q[i]; h *= 1099511628211ull; }
     }
     void u8(uint8_t v) { bytes(&v, 1); }
+    void u16(uint16_t v) { bytes(&v, 2); }   // `strId2` 的三态（PositionTrack 的粘性开关）
     void u32(uint32_t v) { bytes(&v, 4); }
     void i32(int32_t v) { bytes(&v, 4); }
     void f32(float v) { bytes(&v, 4); }        // 按位模式，不是按数值
@@ -620,7 +629,12 @@ uint64_t modelDigest(const LevelData& level)
         d.i32(a.floor);
         d.u8((uint8_t)a.type);
         d.str(level.actionStr(a));      // 解出来的字符串才是语义，strId 只是池里的下标
-        d.str(level.actionStr2(a));     // AnimateTrack 的 trackAnimation（2026-10-21 起建模）
+        // `strId2` 是**按类型复用**的（2026-10-24 上游的写法）：
+        //   AnimateTrack → actionStrTable 的下标（`trackAnimation`）
+        //   PositionTrack → 粘性三态 0/1/2
+        // 所以不能对所有类型都当字符串解 —— 越界下标会随池长度变化，指纹就飘了（f24 就是这么红的）。
+        if (a.type == T::AnimateTrack) d.str(level.actionStr2(a));
+        else d.u16(a.strId2);
         d.u8(a.flag ? 1 : 0);
         d.f32(a.val1);
         d.f32(a.val2);

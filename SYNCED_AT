@@ -5,9 +5,27 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=d4e8219
-ADOCAO_COMMIT_FULL=d4e8219e161bc3619560e53d1870496a9623e5af
-ADOCAO_COMMIT_DATE=2026-10-24
+ADOCAO_COMMIT=f64f038
+ADOCAO_COMMIT_FULL=f64f038c91aaadab66cbaf4aa2ec576287e73883
+ADOCAO_COMMIT_DATE=2026-10-29
+# 本次同步要点（42 个提交；235 个镜像文件逐字节一致）：
+#
+#  1. 模型新增：**PositionTrack 的 `stickToFloors` 三态**（挤在 `FastAction::strId2` 里，
+#     0=关 1=开 2=没写）、**`MultiPlanet`**（新事件类型，仍在 actions，只有星数一列）、
+#     `tilePositionOffsets` 改成"一层可多条"、`MappedFile` 下沉进 core、`archive/AssetPack` 新增。
+#  2. 新用例 +5（只链 core）：anim_timing / countdown_pose / multiplanet / shape_key / sticky_track；
+#     `playback_stop` 要 render。
+#  3. 上游 `tests/tools/{pack_adocao,gen_repeat_adocao}.cpp` **不镜像**：它自己的 CLI 工具，
+#     不上 add_test（库这边对应能力是 `examples/headless --export`）。
+#
+# **护栏报警并修了三处**（详见 MIRROR.md 第十次对齐）：`.adocao` 往返指纹在 f24 上不一致，
+# 根因是 modelDigest 把 `strId2` 一律当字符串解（PositionTrack 存 0/1/2，越界退化成空串，
+# 而池长度在 JSON/.adocao 两条路下不同）。已按类型取；并补上导出的 stickToFloors 与
+# MultiPlanet（后者原先会掉进 default、连 eventType 都不写）。为这两个没有夹具的字段，
+# export_roundtrip 里加了一段手搓 LevelData 的三态/星数往返。
+#
+# 上一次同步：d4e8219（LevelScene 进 render + TIFF 出图留在 core/map）。
+
 # 本次同步要点（41 个提交；224 个镜像文件逐字节一致）：
 #
 #  1. **`render/LevelScene.{hpp,cpp}` + `SceneConfig.hpp` 从 app/ 挪进 render/**（场景组装的

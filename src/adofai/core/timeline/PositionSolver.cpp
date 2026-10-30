@@ -14,6 +14,20 @@
 
 namespace adofai {
 
+static constexpr double kPi = 3.14159265358979323846;
+
+// 行星枢轴：`stickToFloors` 只管 **PositionTrack** 的静态偏移（`planetPivotAt`）。
+//
+// **MoveTrack 动画暂不跟**（2026-10-24 回退）：让行星跟着逐砖动画走之后，动画的位移
+// 会在相邻采样点之间造成几十~上百单位的大跳，拖尾直接拉成贯穿全屏的直线
+// （用户："你这个直线也是才出现的"）。参考实现是靠 `MoveTrackManager` 里
+// "按历史时刻重建位置"给拖尾专门兜住的 —— 那套还没移植，所以先保持"不跟动画"，
+// 等把动画布局本身对齐 + 拖尾能重建历史位置之后再打开。
+static void pivotAt(const LevelData& L, int64_t idx, double t, double& x, double& y) {
+    (void)t;
+    L.planetPivotAt(idx, x, y);
+}
+
 void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& redOut, glm::dvec2& blueOut) {
     const LevelData& L = *timeline.level();   // ③ 切片 4：走访问器，不直接碰 tiles[]
     const int64_t nFull = L.tileCount();   // #0：int64 算，收窄前显式判
@@ -25,15 +39,21 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
     if (n < 2) return;
     int tileIdx = timeline.findTileIndex(t);
 
-    // Before first tile: orbit backward at constant BPM
+    // 倒计时（t < 0）：蓝星绕首砖的枢轴转 —— **相位接在砖 0 的"终点角"上**。
+    // 这样 t→0⁻ 时蓝星正好落在 p1（= 砖 1 的枢轴位置），而 t=0 起走砖 1 的行程
+    // （红蓝交换角色、位置不变）→ 两星位置**连续**。
+    // 旧写法把它钉在起点角（`rotation+180` = `startAngleAt(0)`）上：整块砖的角度被吞掉，
+    // t=0 那一帧蓝星从枢轴对侧横跨 2 格跳到 p1（用户 2026-10-29："开头蓝球是传送过去的，
+    // 不是正常转过去"，任何谱都能复现）。半径仍是 1（倒计时两星贴身自转，不跟着 dist 外推）。
     if (t < timeline.firstStartTime()) {
         const auto& p0 = L.tilePositionAt(0);
         double bpm = timeline.tileBPMs()[0];
         bool cw = timeline.tileIsCW()[0];
-        double startAngle = (timeline.level()->settings.rotation + 180.0) * 3.14159265358979 / 180.0;
+        // 终点角 = 起点角 + 本砖总角（弧度）；倒计时里随着 t 前进往回退，dt=0 时正好是终点角
+        double endAngle = (double)timeline.startAngleAt(0) + (double)timeline.totalAngleAt(0);
         double dt = timeline.firstStartTime() - t;
         double rps = (bpm / 60.0) * 3.14159265358979;
-        double angle = cw ? (startAngle + dt * rps) : (startAngle - dt * rps);
+        double angle = cw ? (endAngle + dt * rps) : (endAngle - dt * rps);
         double dist = 1.0;
         glm::dvec2 mv(p0[0] + std::cos(angle) * dist, p0[1] + std::sin(angle) * dist);
         glm::dvec2 pv(p0[0], p0[1]);
@@ -47,7 +67,9 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
         // 最后一格看起来"没画出来"（2026-10-18 用户实测：任何谱结尾都偏）。
         int lastIdx = n - 2;
         if (lastIdx < 0) lastIdx = 0;
-        const auto& pivotPos = L.tilePositionAt(lastIdx);
+        double lx = 0.0, ly = 0.0;
+        pivotAt(L, lastIdx, t, lx, ly);
+        const double pivotPos[2] = {lx, ly};
         double startAngle = 0.0;
         if (lastIdx > 0) {
             const auto& prevPos = L.tilePositionAt(lastIdx - 1);
@@ -63,7 +85,9 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
     }
 
     bool isRed = (tileIdx%2==0);
-    const auto& pivotPos = L.tilePositionAt(tileIdx);
+    double pvx = 0.0, pvy = 0.0;
+    pivotAt(L, tileIdx, t, pvx, pvy);            // sticky=false 的层用原始砖位
+    const double pivotPos[2] = {pvx, pvy};
     double startTime = timeline.startTimeAt(tileIdx);
     double duration = timeline.durationAt(tileIdx);
     double progress = (duration>0.0001)?(t-startTime)/duration:1.0;
@@ -76,6 +100,73 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
     else       { blueOut=pv; redOut=mv; }
 }
 
+void PositionSolver::planetsAt(const Timeline& timeline, double t, std::vector<PlanetPos>& out) {
+    out.clear();
+    const LevelData& L = *timeline.level();
+    const int64_t nFull = L.tileCount();
+    if (nFull < 2) return;
+    int tileIdx = (int)timeline.findTileIndex(t);
+    if (tileIdx < 0) tileIdx = 0;
+    const int count = L.planetCountAt(tileIdx);
+    if (count <= 2) {
+        glm::dvec2 red{}, blue{};
+        positionAtTile(timeline, t, tileIdx, red, blue);
+        out.push_back({0, red});
+        out.push_back({1, blue});
+        return;
+    }
+
+    int n = count, pivotPos = 0;
+    const uint8_t* ids = L.planetsAt(tileIdx, n, pivotPos);
+    if (n <= 2) {   // 列表退化（理论上不会），回两星口径
+        glm::dvec2 red{}, blue{};
+        positionAtTile(timeline, t, tileIdx, red, blue);
+        out.push_back({0, red});
+        out.push_back({1, blue});
+        return;
+    }
+
+    double px = 0.0, py = 0.0;
+    pivotAt(L, tileIdx, t, px, py);
+    const double startTime = timeline.startTimeAt(tileIdx);
+    const double duration = timeline.durationAt(tileIdx);
+    double progress = (duration > 1e-9) ? (t - startTime) / duration : 1.0;
+    if (progress < 0) progress = 0;
+    if (progress > 1) progress = 1;
+    const double angle = (double)timeline.startAngleAt(tileIdx) +
+                         (double)timeline.totalAngleAt(tileIdx) * progress;
+    const double dist = (double)timeline.tileStartDist(tileIdx) +
+                        ((double)timeline.tileEndDist(tileIdx) - (double)timeline.tileStartDist(tileIdx)) * progress;
+    const double dirSign = timeline.tileIsCW()[tileIdx] ? -1.0 : 1.0;
+    const double inverse = kPi * (n - 2) / n;
+
+    // 移动星的起始角偏移（官方 scrPlanet.Update_RefreshAngles 1625-1631，含 midspin 修正）
+    double angleOffset = dirSign * inverse;
+    if (tileIdx > 0 && L.angleAt(tileIdx - 1) == 999.0) {
+        int prevN = 2, prevPivot = 0;
+        L.planetsAt(tileIdx - 1, prevN, prevPivot);
+        if (prevN > 2) {
+            const double prevDir = timeline.tileIsCW()[tileIdx - 1] ? -1.0 : 1.0;
+            const double prevInverse = kPi * (prevN - 2) / prevN;
+            angleOffset -= prevDir * prevInverse;
+        }
+    }
+    const double num = angle + angleOffset;
+    out.push_back({ids[pivotPos], {px, py}});                                  // 枢轴星
+    const int moverIdx = (pivotPos + 1) % n;
+    out.push_back({ids[moverIdx], {px + std::cos(num) * dist, py + std::sin(num) * dist}});
+
+    const double R = dist / (2.0 * std::sin(kPi / n));
+    const double num4 = num - dirSign * inverse / 2.0;
+    const double cx = px + std::cos(num4) * R;
+    const double cy = py + std::sin(num4) * R;
+    for (int j = 1; j <= n - 2; ++j) {
+        const int id = ids[(pivotPos + 1 + j) % n];
+        const double a = num4 + dirSign * 2.0 * kPi * (-(double)(j + 1) - n / 2.0) / n;
+        out.push_back({(uint8_t)id, {cx + std::cos(a) * R, cy + std::sin(a) * R}});
+    }
+}
+
 void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tileIdx, glm::dvec2& redOut, glm::dvec2& blueOut) {
     const LevelData& L = *timeline.level();   // ③ 切片 4：走访问器，不直接碰 tiles[]
     const int64_t nFull = L.tileCount();   // #0：int64 算，收窄前显式判
@@ -86,12 +177,14 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
     const int n = (int)nFull;
     if (n < 2) return;
     if (t < timeline.firstStartTime()) {
+        // 与 positionAt 的倒计时分支**逐字同源**（见那里的说明：相位必须接在砖 0 的终点角上，
+        // 否则 t=0 会跳 2 格）。
         const auto& p0 = L.tilePositionAt(0);
         double bpm = timeline.tileBPMs()[0]; bool cw = timeline.tileIsCW()[0];
-        double startAngle = (timeline.level()->settings.rotation + 180.0) * 3.14159265358979 / 180.0;
+        double endAngle = (double)timeline.startAngleAt(0) + (double)timeline.totalAngleAt(0);
         double dts = timeline.firstStartTime() - t;
         double rps = (bpm / 60.0) * 3.14159265358979;
-        double angle = cw ? (startAngle + dts * rps) : (startAngle - dts * rps);
+        double angle = cw ? (endAngle + dts * rps) : (endAngle - dts * rps);
         glm::dvec2 mv(p0[0] + std::cos(angle), p0[1] + std::sin(angle));
         glm::dvec2 pv(p0[0], p0[1]);
         redOut = pv; blueOut = mv;
@@ -103,7 +196,9 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
         // 最后一格看起来"没画出来"（2026-10-18 用户实测：任何谱结尾都偏）。
         int lastIdx = n - 2;
         if (lastIdx < 0) lastIdx = 0;
-        const auto& pivotPos = L.tilePositionAt(lastIdx);
+        double lx = 0.0, ly = 0.0;
+        pivotAt(L, lastIdx, t, lx, ly);
+        const double pivotPos[2] = {lx, ly};
         double startAngle = 0.0;
         if (lastIdx > 0) {
             const auto& prevPos = L.tilePositionAt(lastIdx - 1);
@@ -118,7 +213,9 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
         return;
     }
     bool isRed = (tileIdx%2==0);
-    const auto& pivotPos = L.tilePositionAt(tileIdx);
+    double pvx = 0.0, pvy = 0.0;
+    pivotAt(L, tileIdx, t, pvx, pvy);            // sticky=false 的层用原始砖位
+    const double pivotPos[2] = {pvx, pvy};
     double startTime = timeline.startTimeAt(tileIdx);
     double duration = timeline.durationAt(tileIdx);
     double progress = (duration>0.0001)?(t-startTime)/duration:1.0;

@@ -1,3 +1,4 @@
+#include "core/util/MappedFile.hpp"
 #include "LevelData.hpp"
 #include "core/timeline/Timeline.hpp"
 #include "FloorWindow.hpp"   // ③ 切片 4：按块物化缓存（~LevelData 需要完整类型）
@@ -336,6 +337,7 @@ inline LevelData::FastAction::Type eventTypeOf(KeyRef k) {
     if (keyIs(k, "Flash"))         return T::Flash;          // → flashEvents（全屏闪屏）
     if (keyIs(k, "MoveTrack"))     return T::MoveTrack;      // → moveTrackEvents（轨道动画）
     if (keyIs(k, "ScaleRadius"))   return T::ScaleRadius;    // 轨道半径缩放（烘进砖位）
+    if (keyIs(k, "MultiPlanet"))   return T::MultiPlanet;    // 多星布局（逐砖表，见 buildPlanetTables）
     return T::Other;
 }
 
@@ -354,6 +356,8 @@ struct ActionFields {
     float hitsoundVolume = 0.0f, beatsBehind = 0.0f, beatsAhead = 0.0f;
     float offX = 0.0f, offY = 0.0f;
     bool justThisTile = false;
+    bool hasStickToFloors = false, stickToFloors = true;   // PositionTrack 的"粘性轨道"开关
+    bool hasPlanets = false; int planets = 2;              // MultiPlanet 的星数（2..8）
     std::string hitsound, trackDisappear, trackAnimation;
 
     // ── 以下只给 MoveCamera / RepeatEvents 用（rich 模式才填；热路径一个字段都不碰） ──
@@ -629,14 +633,27 @@ inline bool parseActionObject(const char* p, const char* e, ActionFields& f, boo
                 f.hasEvent = true;
             } else if (rich && keyIs(key, "ease")) {
                 if (easeIdOf(v, vEnd, f.easeId)) f.hasEase = true;
-            } else if (rich && keyIs(key, "editorOnly")) {
+            } else if (keyIs(key, "editorOnly")) {
+                // **快路径也要读**：以前只有 rich 才解析，于是 PositionTrack 这类走快路径的事件
+                // 永远拿不到 editorOnly → 编辑器专用事件在播放里被照单全收（MM2 的 +20 就是这么来的）。
                 bool b; if (parseBoolValue(v, vEnd, b) && b) f.editorOnly = true;
             } else if (rich && keyIs(key, "executeOnCurrentFloor")) {
                 bool b; if (parseBoolValue(v, vEnd, b)) f.executeOnCurrentFloor = b;
             }
             break;
         case 's':
-            if (keyIs(key, "startColor")) {
+            if (keyIs(key, "stickToFloors")) {          // PositionTrack 的"粘性轨道"开关
+                if (vEnd - v == 4 && std::memcmp(v, "true", 4) == 0) {
+                    f.stickToFloors = true; f.hasStickToFloors = true;
+                } else if (vEnd - v == 5 && std::memcmp(v, "false", 5) == 0) {
+                    f.stickToFloors = false; f.hasStickToFloors = true;
+                } else if (*v == '"') {
+                    std::string str;
+                    if (!stringValue(v, vEnd, str)) return false;
+                    f.stickToFloors = (str == "Enabled" || str == "true" || str == "True");
+                    f.hasStickToFloors = true;
+                }
+            } else if (keyIs(key, "startColor")) {
                 std::string tmp;
                 if (!stringValue(v, vEnd, tmp)) return false;
                 f.startColor = std::move(tmp); f.hasStartColor = true;
@@ -741,7 +758,29 @@ inline bool parseActionObject(const char* p, const char* e, ActionFields& f, boo
             }
             break;
         case 'p':
-            if (keyIs(key, "plane")) {
+            if (keyIs(key, "planets")) {
+                // "planets": "ThreePlanets" | "3" | 3 —— 与参考 parseMultiPlanetCount 同口径
+                if (*v == '"') {
+                    std::string str;
+                    if (!stringValue(v, vEnd, str)) return false;
+                    static const struct { const char* word; int n; } kWords[] = {
+                        {"Two", 2}, {"Three", 3}, {"Four", 4}, {"Five", 5},
+                        {"Six", 6}, {"Seven", 7}, {"Eight", 8},
+                    };
+                    int count = 0;
+                    if (!str.empty() && str[0] >= '0' && str[0] <= '9') {
+                        count = std::atoi(str.c_str());
+                    } else {
+                        for (const auto& w : kWords) {
+                            if (str.compare(0, std::strlen(w.word), w.word) == 0) { count = w.n; break; }
+                        }
+                    }
+                    if (count > 0) { f.planets = count; f.hasPlanets = true; }
+                } else {
+                    int n2;
+                    if (parseInt(v, vEnd, n2)) { f.planets = n2; f.hasPlanets = true; }
+                }
+            } else if (keyIs(key, "plane")) {
                 std::string tmp;
                 if (!stringValue(v, vEnd, tmp)) return false;
                 f.flashPlane = std::move(tmp); f.hasFlashPlane = true;
@@ -831,6 +870,7 @@ inline bool parseActionObject(const char* p, const char* e, ActionFields& f, boo
                 }
             }
             break;
+
         case 'c':
             if (keyIs(key, "color")) {
                 std::string tmp;
@@ -870,9 +910,20 @@ inline bool buildAction(const ActionFields& f, LevelData::FastAction& a, bool& k
     case T::PositionTrack:
         if (f.hasOffset) { a.val1 = f.offX; a.val2 = f.offY; }
         a.flag = f.justThisTile;
+        // 粘性开关（`stickToFloors`）三态：0 = 关、1 = 开、2 = 事件没写（保持上一个状态）。
+        // 语义同 Re_ADOJAS PositionTrackManager：justThisTile → 只改本层；否则持续到之后所有层。
+        // **存 strId2，不是 strId**：`strId` 是 actionStrTable 的下标，被 v7/schema 与
+        // 对拍摘要（floor/type/val1/val2/flag/actionStr）当作"事件字符串"读 —— 借它存三态
+        // 会让 PositionTrack 的摘要与 DOM 路径分叉（f18/f19/f24 就是这么红的）。
+        // `strId2` 只被 AnimateTrack 用（PositionTrack 这里空着），而且它是"按类型稀疏"的列，
+        // 写进 .adocao 不需要改格式。
+        a.strId2 = f.hasStickToFloors ? (f.stickToFloors ? 1u : 0u) : 2u;
         break;
     case T::ScaleRadius:
         a.val1 = f.hasScale ? f.scaleX : 1.0f;
+        break;
+    case T::MultiPlanet:
+        a.val1 = (float)(f.hasPlanets ? f.planets : 2);
         break;
     case T::SetHitsound:
         a.strId = g_internOwner ? g_internOwner->internActionStr(f.hitsound) : 0;
@@ -894,6 +945,12 @@ inline bool buildAction(const ActionFields& f, LevelData::FastAction& a, bool& k
            f.type != T::MoveCamera && f.type != T::RepeatEvents &&
            f.type != T::ColorTrack && f.type != T::RecolorTrack &&
            f.type != T::Flash && f.type != T::MoveTrack;   // 后六者进富结构
+    // **编辑器专用事件**（`editorOnly: "Enabled"`）在播放/渲染里一律不生效：
+    // Re_ADOJAS 是 `if (event.editorOnly && !isEditorMode) continue;`，而 ADOCAO 没有编辑器模式。
+    // 2026-10-24 真踩过：MM2 的 floor 1414 `PositionTrack positionOffset [20,0]` 是编辑器专用，
+    // 我们照收 → 从那一层起整条轨道被推 +20 世界单位；相机锚点在 1408（早于它），
+    // 于是轨道整体偏到画面右边，看着像"相机/旋转中心不对"。
+    if (f.editorOnly) keep = false;
     return true;
 }
 
@@ -975,6 +1032,7 @@ inline void decodeSpecialEvent(const ActionFields& f, CameraSink& sink) {
         ev.flags = flags;
         sink.colors.push_back(std::move(ev));
     } else if (f.type == T::Flash) {
+        if (f.editorOnly) return;      // 编辑器专用事件：播放里不生效（同 PositionTrack，见 buildAction 的注释）
         C::FlashEvent ev;
         ev.floor = f.floor;
         ev.duration = f.hasDuration ? f.duration : 1.0f;
@@ -1674,7 +1732,15 @@ void LevelData::buildRecolorIndex(const Timeline& timeline) {
         rt.lo = (int32_t)a;
         rt.hi = (int32_t)b;
         rt.gap = std::max<int32_t>(0, ev.gapLength);
-        rt.beat = (double)timeline.durationAt(ev.floor);
+        // **一拍 = 60/bpm**（Re_ADOJAS `TileColorManager::calcRecolorTriggerTime`：
+        // `tileTime + (angleOffset / 180) * (60 / bpm)`）。
+        // 别用 `durationAt(floor)` —— 那是"这一砖走完要多久" = 角度/180 × 一拍，
+        // 于是 30° 的砖会把 angleOffset 和 duration 都算成 1/6（2026-10-24 真踩过：
+        // MM2 里"有些砖飞快飘走、有些正常"，就是角度不同的砖被缩放了不同的倍率）。
+        const auto& bpms0 = timeline.tileBPMs();
+        const int64_t bi0 = std::clamp<int64_t>(ev.floor, 0, (int64_t)bpms0.size() - 1);
+        const double secPerBeat0 = 60.0 / std::max(1.0f, bpms0.empty() ? 100.0f : bpms0[(size_t)bi0]);
+        rt.beat = secPerBeat0;
         rt.trigger = (double)timeline.startTimeAt(ev.floor) +
                      ((double)ev.angleOffset / 180.0) * rt.beat;
         rt.duration = ev.duration;
@@ -2006,10 +2072,15 @@ void LevelData::buildMoveTrackIndex(const Timeline& timeline) {
             if (a > b) std::swap(a, b);
             ev.lo = (int32_t)std::clamp<int64_t>(a, 0, n - 1);
             ev.hi = (int32_t)std::clamp<int64_t>(b, 0, n - 1);
-            const double beat = (double)timeline.durationAt(ev.floor);
+            // 同 Re_ADOJAS `TimelineManager`：`timeOffset = (angleOffset/180)*secPerBeat`、
+            // `duration = (durBeats * secPerBeat) / pitch`，其中 **secPerBeat = 60/bpm**。
+            // 用 durationAt(floor) 会让"转角小的砖"动画时长短得离谱 → 看起来是"飞走"。
+            const auto& bpms = timeline.tileBPMs();
+            const int64_t bidx = std::clamp<int64_t>(ev.floor, 0, (int64_t)bpms.size() - 1);
+            const double secPerBeat = 60.0 / std::max(1.0f, bpms.empty() ? 100.0f : bpms[(size_t)bidx]);
             ev.trigger = (double)timeline.startTimeAt(ev.floor) +
-                         ((double)ev.angleOffset / 180.0) * beat;
-            ev.durSec = (double)std::max(0.0f, ev.durBeats) * beat / pitch;
+                         ((double)ev.angleOffset / 180.0) * secPerBeat;
+            ev.durSec = (double)std::max(0.0f, ev.durBeats) * secPerBeat / pitch;
             m_moveIndex.push_back(ev);
             const float sc = std::max(std::abs(ev.scaleX), std::abs(ev.scaleY));
             if (sc > m_moveMaxScale) m_moveMaxScale = sc;
@@ -2139,7 +2210,10 @@ TileColors LevelData::baseColorsAt(int64_t floor, double timeSec, float amplitud
     if (cfg.colorType != "Single" && cfg.colorType != "Stripes") return to;
 
     const double start = timeline->startTimeAt(e->floor);
-    const double beat = (double)timeline->durationAt(e->floor);   // 一砖 = 一拍（秒）
+    // 一拍 = 60/bpm（Re_ADOJAS：`fadeDur = evDurBeats * 60 / bpm`）。
+    const auto& bpmsC = timeline->tileBPMs();
+    const int64_t biC = std::clamp<int64_t>(e->floor, 0, (int64_t)bpmsC.size() - 1);
+    const double beat = 60.0 / std::max(1.0f, bpmsC.empty() ? 100.0f : bpmsC[(size_t)biC]);
     const double dur = (double)e->duration * beat;
     if (dur <= 0.0) return to;
     if (timeSec >= start + dur) return to;
@@ -2242,66 +2316,87 @@ bool LevelData::ingestEventJson(const char* begin, const char* end, std::string&
 }
 
 bool LevelData::captureRawMembers(const char* data, size_t length) {
-    rawActionsJson.clear();
+    rawActionSpans.clear();
     rawDecorationsJson.clear();
     rawSettingsJson.clear();
     if (!data || length == 0) return false;
-    // **先过 cleanJson**：ADOFAI 谱面里广泛存在重复逗号/缺逗号（重特效谱尤其常见，
-    // 如 PLUM_MEGAMIX_2 的 `"requiredMods": [],,`），RapidJSON 会直接拒绝。
-    // 注意：cleanJson 是逐字符复现旧编辑器的容错行为，快路径与它必须等价（见 JsonCleaner.hpp）。
-    std::string cleaned;
-    rapidjson::Document d;
-    d.Parse<rapidjson::kParseTrailingCommasFlag | rapidjson::kParseCommentsFlag>(data, length);
-    if (d.HasParseError()) {
-        cleaned = cleanJson(std::string(data, length));
-        d.Parse<rapidjson::kParseTrailingCommasFlag | rapidjson::kParseCommentsFlag>(cleaned.data(),
-                                                                                    cleaned.size());
-    }
-    if (d.HasParseError() || !d.IsObject()) return false;
-    auto ai = d.FindMember("actions");
-    if (ai != d.MemberEnd() && ai->value.IsArray()) {
-        rawActionsJson.reserve(ai->value.Size());
-        for (const auto& v : ai->value.GetArray()) {
-            rapidjson::StringBuffer buf;
-            rapidjson::Writer<rapidjson::StringBuffer> w(buf);
-            if (!v.Accept(w)) return false;
-            rawActionsJson.emplace_back(buf.GetString(), buf.GetSize());
+
+    // **流式扫描，不进 DOM、不复制每条 action**（2026-10-25）。
+    // 以前：`rapidjson::Document` 解析整份 JSON + 每条 action 一个 std::string
+    //        → 1.35 亿砖 / 6.5 GB 的谱 footprint 44 GB、换出 139 GB。
+    // 现在：用快路径同款 skipContainer 走一遍顶层对象，只记 (offset,length)。
+    //       mmap 加载时这些切片直接指向映射区（零拷贝）；否则复制一份原文当 blob。
+    const bool zeroCopy = mappedFile && mappedFile->mapped() &&
+                          data >= mappedFile->data() && data < mappedFile->data() + mappedFile->size();
+    if (!zeroCopy) rawBlob.assign(data, length);
+    // 偏移一律相对**原始输入**计算：rawBlob 是它的逐字节副本，所以两种路径的偏移都通用
+    // （写成 rawBlob.data() 会让 loadFromString 那条路的指针相减来自两个不同对象 —— UB）。
+    const char* base = data;
+
+    const char* p = data;
+    const char* e = data + length;
+    auto ws = [](const char* q, const char* end) { while (q < end && (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r')) ++q; return q; };
+    p = ws(p, e);
+    if (p >= e || *p != '{') return false;
+    ++p;
+    bool ok = false;
+    for (;;) {
+        p = ws(p, e);
+        if (p >= e) return false;
+        if (*p == '}') { ok = true; break; }
+        if (*p == ',') { ++p; continue; }
+        if (*p != '"') return false;
+        // key
+        const char* keyStart = p + 1;
+        const char* keyEnd = keyStart;
+        while (keyEnd < e && *keyEnd != '"') { if (*keyEnd == '\\') ++keyEnd; ++keyEnd; }
+        if (keyEnd >= e) return false;
+        const std::string_view key(keyStart, (size_t)(keyEnd - keyStart));
+        p = ws(keyEnd + 1, e);
+        if (p >= e || *p != ':') return false;
+        p = ws(p + 1, e);
+        const char* valueStart = p;
+        const char* valueEnd = skipContainer(p, e);   // 与快路径同一个跳过器
+        if (!valueEnd) return false;
+
+        if (key == "actions" && *valueStart == '[') {
+            // 逐个元素记切片（元素都是对象；字符串/数字/嵌套数组也一并兼容）
+            const char* q = ws(valueStart + 1, valueEnd);
+            for (;;) {
+                q = ws(q, valueEnd);
+                if (q >= valueEnd) break;
+                if (*q == ']') break;
+                if (*q == ',') { ++q; continue; }
+                const char* itemEnd = skipContainer(q, valueEnd);
+                if (!itemEnd) return false;
+                rawActionSpans.push_back({(uint32_t)(q - base), (uint32_t)(itemEnd - q)});
+                q = itemEnd;
+            }
+        } else if (key == "settings" && *valueStart == '{') {
+            rawSettingsJson.assign(valueStart, (size_t)(valueEnd - valueStart));
+        } else if (key == "decorations" && *valueStart == '[') {
+            rawDecorationsJson.assign(valueStart, (size_t)(valueEnd - valueStart));
         }
+        p = valueEnd;
     }
-    auto si = d.FindMember("settings");
-    if (si != d.MemberEnd() && si->value.IsObject()) {
-        rapidjson::StringBuffer buf;
-        rapidjson::Writer<rapidjson::StringBuffer> w(buf);
-        if (!si->value.Accept(w)) return false;
-        rawSettingsJson.assign(buf.GetString(), buf.GetSize());
-    }
-    auto di = d.FindMember("decorations");
-    if (di != d.MemberEnd() && di->value.IsArray()) {
-        rapidjson::StringBuffer buf;
-        rapidjson::Writer<rapidjson::StringBuffer> w(buf);
-        if (!di->value.Accept(w)) return false;
-        rawDecorationsJson.assign(buf.GetString(), buf.GetSize());
-    }
+    if (!ok) return false;
+    if (rawActionSpans.empty() && rawSettingsJson.empty()) return false;
+    LOG_I("preserveRawJson: 捕获 %zu 条 action 切片（%s，%.0f MB）", rawActionSpans.size(),
+          zeroCopy ? "指向 mmap" : "复制原文", (double)length / (1024.0 * 1024.0));
     return true;
 }
 
 bool LevelData::loadFromFile(const std::string& filepath, ProgressCb onProgress, bool exportOnly) {
     if (onProgress) onProgress(0.05f, "Reading file...");
-    std::ifstream file(filepath, std::ios::binary);
-    if (!file.is_open()) {
+    // **mmap，不复制整份文件**（2026-10-25）：以前 `std::string content(size)` 对 6.5 GB 的谱
+    // 就是 6.5 GB 堆内存，直接把人挤到 swap。映射之后解析器照样看到连续内存，但文件页由内核按需调页。
+    auto map = std::make_shared<MappedFile>();
+    if (!map->open(filepath)) {
         LOG_E("Cannot open level file: %s", filepath.c_str());
         return false;
     }
-    file.seekg(0, std::ios::end);
-    std::streamoff size = file.tellg();
-    if (size <= 0) {
-        LOG_E("Cannot open level file: %s", filepath.c_str());
-        return false;
-    }
-    file.seekg(0, std::ios::beg);
-    std::string content((size_t)size, '\0');
-    file.read(&content[0], size);
-    return loadFromBuffer(content.data(), content.size(), onProgress, exportOnly);
+    mappedFile = map;   // LevelData 持有映射：pack 期捕获的原始切片直接指向它
+    return loadFromBuffer(map->data(), map->size(), onProgress, exportOnly);
 }
 
 bool LevelData::loadFromString(const std::string& jsonStr, ProgressCb onProgress, bool exportOnly) {
@@ -2960,6 +3055,17 @@ bool LevelData::parseLegacy(const std::string& jsonStr, ProgressCb onProgress, b
                         act.flag = (v == "Enabled" || v == "true" || v == "True");
                     }
                 }
+                // 粘性开关：**快路径把它存在 strId2 的三态里**（2 = 事件没写），
+                // DOM 路径必须同样设，否则 f19「快路径 vs DOM」的 action 摘要对不上。
+                act.strId2 = 2u;
+                if (a.HasMember("stickToFloors")) {
+                    const auto& sv = a["stickToFloors"];
+                    if (sv.IsBool()) act.strId2 = sv.GetBool() ? 1u : 0u;
+                    else if (sv.IsString()) {
+                        std::string v2 = sv.GetString();
+                        act.strId2 = (v2 == "Enabled" || v2 == "true" || v2 == "True") ? 1u : 0u;
+                    }
+                }
             } else if (act.type == FastAction::SetHitsound) {
                 act.strId = g_internOwner ? g_internOwner->internActionStr(a.HasMember("hitsound") ? std::string(a["hitsound"].GetString()) : std::string()) : 0;
                 act.val1 = a.HasMember("hitsoundVolume") ? a["hitsoundVolume"].GetFloat() : 0.0f;
@@ -3155,6 +3261,8 @@ void LevelData::refreshDerivedCaches() {
     //   ② 那张稠密数组只要谱里有一条 SetSpeed 就 `resize(n)`（MYC 315 条事件白占 81 MB）。
     struct SSEv { int floor = 0; float val = 0.0f; bool isMultiplier = false; };
     std::vector<SSEv> ssEvents;
+    bool& hasStickEvents = m_hasStickEvents;   // 成员：applyPositionTrackOffsets 也要用
+    std::vector<std::pair<int64_t,int>> multiEvents;   // (floor, 星数)，保持文件序
     // 按需分配：没有任何 SetSpeed 事件时这 n x 12 B 是白占的（实测 25 万层的无害谱上，
     // 峰值快照里就有一块 250001 x 12 = 3,000,012 B 的分配）。1e8 层就是 1.2 GB。
     // 空 vector 与原来逐位等价：默认构造的 SS 全 false/0，下面那个逐层循环体什么都不做。
@@ -3181,8 +3289,14 @@ void LevelData::refreshDerivedCaches() {
             tileHasSetSpeed[floor] = true;
             ssEvents.push_back({floor, a.val1, a.flag});
             break;
+        case FastAction::MultiPlanet:
+            multiEvents.push_back({(int64_t)floor, (int)std::lround(a.val1)}); break;
         case FastAction::PositionTrack:
-            tilePositionOffsets[floor] = {a.val1, a.val2, a.flag}; break;
+            tilePositionOffsets[floor].push_back(
+                {a.val1, a.val2, a.flag,
+                 (int8_t)(a.strId2 == 1u ? 1 : (a.strId2 == 0u ? 0 : -1))});
+            if (a.strId2 <= 1u) hasStickEvents = true;
+            break;
         case FastAction::SetHitsound:
             // strId == 0 就是空串（= 用 settings.hitsound），与上面 push 的 type 语义逐字一致。
             hsChanges.push_back({floor, a.flag ? a.val1 : settings.hitsoundVolume,
@@ -3205,6 +3319,9 @@ void LevelData::refreshDerivedCaches() {
         default: break;
         }
     }
+
+    // MultiPlanet 逐砖表：只在这张谱真有该事件时才建（否则空表 = 恒 2 颗）
+    buildPlanetTables(multiEvents);
 
     float runningBPM = settings.bpm;
     // 空 = 本谱一条 SetSpeed 都没有：tileBPMs 上面已经 assign 成全 settings.bpm，
@@ -3250,8 +3367,158 @@ void LevelData::refreshDerivedCaches() {
                          bookmarkFloors.end());
 }
 
+void LevelData::buildPlanetTables(const std::vector<std::pair<int64_t, int>>& events) {
+    m_numPlanets.clear();
+    m_planetListRef.clear();
+    m_planetPivotPos.clear();
+    m_planetLists.clear();
+    if (events.empty()) return;
+    const int64_t n = (int64_t)tiles.size();
+    if (n <= 0) return;
+
+    m_numPlanets.assign((size_t)n, 2);
+    m_planetListRef.assign((size_t)n, 0);
+    m_planetPivotPos.assign((size_t)n, 0);
+
+    // 去重表：同一组行星列表只存一份（多数谱只有 [0,1] / [0,1,2] 两种）
+    std::map<std::array<uint8_t, 9>, uint16_t> listIndex;
+    auto listRefOf = [&](const uint8_t* ids, int len) -> uint16_t {
+        std::array<uint8_t, 9> key{};
+        key[0] = (uint8_t)len;
+        for (int i = 0; i < len; ++i) key[1 + i] = ids[i];
+        auto it = listIndex.find(key);
+        if (it != listIndex.end()) return it->second;
+        const uint16_t ref = (uint16_t)m_planetLists.size();
+        PlanetList l;
+        l.len = (uint8_t)len;
+        for (int i = 0; i < len; ++i) l.ids[i] = ids[i];
+        m_planetLists.push_back(l);
+        listIndex.emplace(key, ref);
+        return ref;
+    };
+    listRefOf(nullptr, 0);   // 占位：ref 0 留给"默认两星"（不该被用到）
+
+    // 与参考实现一致：列表初值 [0,1]，池 [2..7]；枢轴在列表里的下标 chosenPos，
+    // 增删星的参照是**前一砖**的枢轴 prevPivotPos。
+    uint8_t planetIds[8] = {0, 1, 0, 0, 0, 0, 0, 0};
+    int numPlanets = 2;
+    uint8_t pool[8] = {2, 3, 4, 5, 6, 7, 0, 0};
+    int poolLen = 6;
+    int chosenPos = 0;
+    int prevPivotPos = 0;
+
+    auto applyCount = [&](int req) {
+        if (req < 2) req = 2;
+        if (req > 8) req = 8;
+        if (req == numPlanets) return;
+        const uint8_t moverId = planetIds[chosenPos];
+        const uint8_t refId = planetIds[prevPivotPos];
+        if (req > numPlanets) {
+            for (int k = 1; k <= req - numPlanets; ++k) {
+                if (poolLen <= 0) break;
+                const uint8_t id = pool[0];
+                for (int i = 1; i < poolLen; ++i) pool[i - 1] = pool[i];
+                --poolLen;
+                const int at = prevPivotPos + k - 1;   // 插到参照星之前
+                for (int i = numPlanets; i > at; --i) planetIds[i] = planetIds[i - 1];
+                planetIds[at] = id;
+                ++numPlanets;
+            }
+        } else {
+            const int remove = numPlanets - req;
+            int positions[8] = {0};
+            int posCount = 0;
+            for (int k = 1; posCount < remove && k <= numPlanets; ++k) {
+                const int pos = (prevPivotPos - k + numPlanets) % numPlanets;
+                if (planetIds[pos] == moverId) continue;   // 本砖枢轴永不被移除
+                positions[posCount++] = pos;
+            }
+            std::sort(positions, positions + posCount);
+            uint8_t removed[8] = {0};
+            int removedCount = 0;
+            for (int k = posCount - 1; k >= 0; --k) {
+                removed[removedCount++] = planetIds[positions[k]];
+                for (int i = positions[k]; i + 1 < numPlanets; ++i) planetIds[i] = planetIds[i + 1];
+                --numPlanets;
+            }
+            for (int k = removedCount - 1; k >= 0; --k) {   // 插回池首（顺序与参考一致）
+                if (poolLen >= 8) break;
+                for (int i = poolLen; i > 0; --i) pool[i] = pool[i - 1];
+                pool[0] = removed[k];
+                ++poolLen;
+            }
+        }
+        chosenPos = 0;
+        for (int i = 0; i < numPlanets; ++i) if (planetIds[i] == moverId) { chosenPos = i; break; }
+        prevPivotPos = 0;
+        for (int i = 0; i < numPlanets; ++i) if (planetIds[i] == refId) { prevPivotPos = i; break; }
+    };
+
+    size_t ei = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        while (ei < events.size() && events[ei].first == i) {
+            applyCount(events[ei].second);
+            // 前一砖是 midspin 时，它直接继承新的星数（参考实现同一行）
+            if (i > 0 && angleAt(i - 1) == 999.0)   // 原始角度（midspin），不是解析后的 direction
+                m_numPlanets[(size_t)i - 1] = (uint8_t)numPlanets;
+            ++ei;
+        }
+        m_numPlanets[(size_t)i] = (uint8_t)numPlanets;
+        m_planetListRef[(size_t)i] = listRefOf(planetIds, numPlanets);
+        m_planetPivotPos[(size_t)i] = (uint8_t)std::min<int>(chosenPos, numPlanets - 1);
+        prevPivotPos = chosenPos;
+        if (numPlanets > 2 && angleAt(i) == 999.0)
+            chosenPos = (chosenPos - 1 + numPlanets) % numPlanets;   // midspin：prev
+        else
+            chosenPos = (chosenPos + 1) % numPlanets;                // 常规：next
+    }
+    LOG_I("MultiPlanet: %d 条事件，行星列表表 %zu 种（最大 %d 颗）", (int)events.size(),
+          m_planetLists.size() - 1, 8);
+
+    // 诊断：`ADOCAO_MP_DUMP=a-b` 打印该区间的逐砖行星表（与参考实现对拍用）
+    if (const char* rng = std::getenv("ADOCAO_MP_DUMP")) {
+        int a = 0, b = 0;
+        if (std::sscanf(rng, "%d-%d", &a, &b) == 2) {
+            if (b >= (int)n) b = (int)n - 1;
+            for (int i = a; i <= b; ++i) {
+                int cnt = 0, pivot = 0;
+                const uint8_t* ids = planetsAt(i, cnt, pivot);
+                std::string list;
+                for (int k = 0; k < cnt; ++k) { list += std::to_string(ids[k]); if (k + 1 < cnt) list += ","; }
+                LOG_I("mp[%d] n=%d pivot=%d ids=%s", i, cnt, pivot, list.c_str());
+            }
+        }
+    }
+}
+
+void LevelData::planetPivotAt(int64_t i, double& x, double& y) const {
+    const auto p = tilePositionAt(i);
+    x = p[0]; y = p[1];
+    if (m_tileStick.empty() || i < 0 || (size_t)i >= m_tileStick.size() || m_tileStick[(size_t)i] != 0) return;
+    // stick=false：行星走**原始**砖位 → 把 PositionTrack 的偏移减回去
+    double cx = 0.0, cy = 0.0;
+    auto it = std::upper_bound(m_cumOffsets.begin(), m_cumOffsets.end(), (int32_t)i,
+                               [](int32_t v, const CumOffset& o) { return v < o.floor; });
+    if (it != m_cumOffsets.begin()) { const CumOffset& o = *(it - 1); cx = o.x; cy = o.y; }
+    auto po = tilePositionOffsets.find((int)i);
+    if (po != tilePositionOffsets.end()) {
+        for (const TilePositionOffset& o : po->second)
+            if (o.justThisTile) { cx += o.offsetX; cy += o.offsetY; }
+    }
+    x -= cx; y -= cy;
+}
+
 void LevelData::applyPositionTrackOffsets() {
     if (tilePositionOffsets.empty()) return;
+
+    const bool wantStick = !settings.stickToFloors || m_hasStickEvents;
+    if (wantStick) {
+        m_tileStick.assign(tiles.size(), settings.stickToFloors ? 1 : 0);
+        m_cumOffsets.clear();
+    } else {
+        m_tileStick.clear();
+        m_cumOffsets.clear();
+    }
 
     double cumX = 0.0, cumY = 0.0;
     const int64_t nFull = (int64_t)tiles.size();
@@ -3262,7 +3529,23 @@ void LevelData::applyPositionTrackOffsets() {
     }
     const int n = (int)nFull;
 
-    std::vector<std::pair<int, TilePositionOffset>> sorted(tilePositionOffsets.begin(), tilePositionOffsets.end());
+    struct StickEv { bool stick = true; bool justThisTile = false; };
+    std::vector<std::pair<int, StickEv>> stickEvents;
+    for (const auto& kv : tilePositionOffsets) {
+        for (const TilePositionOffset& o : kv.second) {
+            if (o.stick < 0) continue;
+            StickEv se; se.stick = o.stick != 0; se.justThisTile = o.justThisTile;
+            stickEvents.push_back({kv.first, se});
+        }
+    }
+    std::sort(stickEvents.begin(), stickEvents.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    size_t oi2 = 0;
+    int curStick = -1;
+    std::vector<std::pair<int, TilePositionOffset>> sorted;
+    sorted.reserve(tilePositionOffsets.size());
+    for (const auto& kv : tilePositionOffsets)
+        for (const TilePositionOffset& o : kv.second) sorted.push_back({kv.first, o});
     std::sort(sorted.begin(), sorted.end(), [](auto& a, auto& b) { return a.first < b.first; });
     size_t oi = 0;
 
@@ -3288,6 +3571,21 @@ void LevelData::applyPositionTrackOffsets() {
         }
         tiles[i].position[0] += cumX + px;
         tiles[i].position[1] += cumY + py;
+        if (wantStick) {
+            if (!m_cumOffsets.empty() && m_cumOffsets.back().floor != i)
+                m_cumOffsets.push_back({i, cumX, cumY});      // 该层生效的累计偏移（每层一条）
+            else if (m_cumOffsets.empty())
+                m_cumOffsets.push_back({i, cumX, cumY});
+            // sticky：本层事件（justThisTile → 只改本层；否则改持续值），没写就继承
+            int tileStick = -1;
+            while (oi2 < stickEvents.size() && stickEvents[oi2].first == i) {
+                const auto& se = stickEvents[oi2++];
+                if (se.second.justThisTile) tileStick = se.second.stick ? 1 : 0;
+                else { curStick = se.second.stick ? 1 : 0; tileStick = curStick; }
+            }
+            m_tileStick[(size_t)i] = (uint8_t)(tileStick >= 0 ? tileStick
+                                                : (curStick >= 0 ? curStick : (settings.stickToFloors ? 1 : 0)));
+        }
     }
 }
 

@@ -55,7 +55,7 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 42/42
+ctest --test-dir build          # 默认 47/47
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
@@ -280,7 +280,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 42 条 / render=ON 47 条**（随模块开关增减）：
+**render=OFF 47 条 / render=ON 53 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|
@@ -298,6 +298,7 @@ ctest --test-dir build
 | `keyframes` / `tile_animation` / `time_origin` | 逐砖关键帧求值、逐砖时间轴、以及 `separateCountdownTime` 决定的**时间基准**（它错了整条时间线会整体平移）|
 | `level_reload` | 关卡对象的**所有权与幂等**：`LevelData` 不可拷贝（缓存所有权）、可安全移动、`loadFromBuffer` 两次 == 一次（actions 不许被追加）、`releaseAngleData()` 之后仍能建窗口缓存 |
 | `bit_span` / `cull_index` / `cull_cost` | 位图区间置值、粗块 AABB 索引与全扫逐元素对拍、三种剔除策略的候选数/漏砖数/耗时留痕 |
+| `multiplanet` / `sticky_track` / `countdown_pose` / `anim_timing` / `shape_key` | 多星布局、粘性轨道（`stickToFloors` 三态）、倒计时姿态、动画计时、形状键 |
 | `std_includes` | 库自有源码用了 `std::stable_sort`/`std::snprintf`/`std::filesystem`… 就必须**直接** include 对应的头 —— libc++ 常经间接包含（macOS 绿），**MinGW 直接报错**（2026-10-22 windows-default 真炸过）|
 | `export_roundtrip` | 四种格式的导出都必须**读得回来且建模字段逐位相同**；同输入两次导出逐字节相同；明文导出还要老解析路径也读得动；`.adocao` 的 pack 与原件的 pack 逐字节相同。**同一条测试就是导出模块的漂移护栏**（上游给模型加字段而导出没跟上 → 红）|
 | `export_independent` | 独立验收：Python 的 `json` / `lzma` 说了算（第三方实现），一份**另写的**建模投影对比，magic/头自洽，截断与改坏必须失败 |

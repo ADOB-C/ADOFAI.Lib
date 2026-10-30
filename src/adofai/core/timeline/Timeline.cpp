@@ -279,15 +279,18 @@ bool Timeline::animAt(int64_t i, double time, AnimSample& out) const {
     return any;
 }
 
-float Timeline::durationAt(int64_t i) const {
+double Timeline::durationAt(int64_t i) const {
     return durationFromTotalAngle(i, totalAngleAt(i));
 }
 
-float Timeline::durationFromTotalAngle(int64_t i, float totalAngle) const {
+double Timeline::durationFromTotalAngle(int64_t i, float totalAngle) const {
     const int64_t n = (int64_t)m_tileBPM.size();
-    if (i >= n - 1) return m_exportOnly ? 0.1f : 0.0f;
-    const float rotationAmount = std::abs(totalAngle) / (2.0f * 3.14159265f);
-    return rotationAmount * 2.0f * (60.0f / m_tileBPM[(size_t)i]);
+    if (i >= n - 1) return m_exportOnly ? 0.1 : 0.0;
+    // 全程 double 算：`totalAngle`/`m_tileBPM` 本身仍是 float（存的是解析出来的原值），
+    // 但换算不再在 float 里做 —— 20× BPM 时每砖只有几微秒，float 那一步的舍入相对量虽不变，
+    // 没有理由再白丢尾数。
+    const double rotationAmount = std::abs((double)totalAngle) / (2.0 * 3.14159265358979323846);
+    return rotationAmount * 2.0 * (60.0 / (double)m_tileBPM[(size_t)i]);
 }
 void Timeline::precalculateTiming() {
     const auto& tiles = m_level->tiles;
@@ -376,24 +379,36 @@ void Timeline::precalculateTiming() {
     m_tileIsCW[n - 1] = isCW;
     m_tileBPM[n - 1] = currentBPM;
 
-    // Phase 3: Prefix sum
-    double totalTime = 0.0;
+    // Phase 3: Prefix sum —— **先平移、后累加**（不变量，见下）。
+    //
+    // 平移量 = 平移前的 startTime[1]，也就是 durationAt(0)。把它放在累加**之前**（从 -shift 起算），
+    // 而不是"从头累加、最后整条数组 -= shift"：两种写法数学等价，但只有这一种保证
+    // **从任意内部值继续向前累加都能复刻同一串 double**。窗口重算有三条路
+    // （Timeline::recomputeBlock、LevelData 的 FloorWindowCache、.adocao 的 checkpoint），
+    // 它们全部是"从存下来的某个 startTime 起、按层序加 durationAt" —— 后置平移会让
+    // `(S_i - shift)` 再参与加法，与 `S_i` 参与加法的舍入不同（实测 1 ULP，
+    // 把 timeline_anchor / adocao_window 打红）。先平移就没有这个分叉。
+    // startTime[1] 仍是精确的 0：(-d0) + d0 == 0。
+    const double shift = (n > 1) ? (double)durationAt(0) : 0.0;
+    double totalTime = -shift;
 
     for (int i = 0; i < n - 1; i++) {
         m_tileStartTimes[i] = totalTime;
         totalTime += (double)durationAt(i);   // 时长不存了：后面按块重算用同一个 durationAt() 现算
     }
     if (n > 0) m_tileStartTimes[n - 1] = totalTime;
+    const double preShiftTotal = totalTime + shift;   // 平移前的总时长（只用于日志/统计）
     // 注意：这是**平移前**的赋值 → 恒为 0（等价于"t<0 的倒计时段"阈值）。
     // 平移后 startTimeAt(0) 是负的一砖时长；PositionSolver 用 firstStartTime() 区分
     // "倒计时绕砖 0 转"与"正常沿砖走"，保持 0 是当前行为。
     m_firstStartTime = 0.0;
 
-    double preShiftTotal = totalTime;
-    if (n > 1) {
-        double shift = m_tileStartTimes[1];
-        for (int i = 0; i < n; i++) m_tileStartTimes[i] -= shift;
-    }
+    // 窗口物化的块基点 = 稠密数组在块首层的值。因为数组本身就是"从 -shift 起的前缀和"，
+    // 从任一块基点继续累加都与数组逐位相同 —— 重算路径不需要知道 shift。
+    m_blockStartTimes.clear();
+    m_blockStartTimes.reserve((size_t)((n + kBlockStride - 1) / kBlockStride));
+    for (int64_t i = 0; i < (int64_t)n; i += kBlockStride)
+        m_blockStartTimes.push_back(m_tileStartTimes[(size_t)i]);
 
     // Phase 4: Last tile — use pre-built index instead of scanning all actions.
     // Export mode has no tile geometry, so this phase is only needed for normal
@@ -510,6 +525,18 @@ void Timeline::precalculateTiming() {
             LOG_I("trackvis: startTimes[0..3] = %.4f %.4f %.4f %.4f",
                   m_tileStartTimes[0], m_tileStartTimes[1], m_tileStartTimes[2], m_tileStartTimes[3]);
             // 值 "2" 时额外把整张网格写成 CSV，供 Re_ADOJAS 的 headless harness 用同一套网格
+            // 值 "3"：只写逐砖时长（`durationAt` 的 float 与 double 两条口径），
+            // 用来量"BPM 整体放大 N 倍之后时间线精度掉多少"（见 docs/profiling.md）。
+            if (const char* v3 = std::getenv("ADOCAO_TRACKVIS_DUMP"); v3 && v3[0] == '3') {
+                if (FILE* f = std::fopen("build/trackvis_dur.csv", "w")) {
+                    std::fprintf(f, "floor,dur,startTime\n");
+                    for (int64_t i = 0; i < (int64_t)n; ++i)
+                        std::fprintf(f, "%lld,%.17g,%.17g\n", (long long)i,
+                                     (double)durationAt(i), m_tileStartTimes[(size_t)i]);
+                    std::fclose(f);
+                    LOG_I("trackvis: 时长已写 build/trackvis_dur.csv（%lld 层）", (long long)n);
+                }
+            }
             if (const char* v = std::getenv("ADOCAO_TRACKVIS_DUMP"); v && v[0] == '2') {
                 if (FILE* f = std::fopen("build/trackvis_grid.csv", "w")) {
                     std::fprintf(f, "floor,startTime,bpm,posX,posY\n");
@@ -573,14 +600,6 @@ void Timeline::precalculateTiming() {
             m_anchors.push_back(a);
         }
         LOG_D("Timeline: %zu 个锚点（每 %lld 层）", m_anchors.size(), (long long)kAnchorStride);
-
-        // 窗口物化的块起始时间（kBlockStride 粒度，8 B/份）。**原样抄自同一支数组**，
-        // 所以与"从 4096 锚点起累加到同一层"的中间值逐位相同 —— 从更近的块起点重新累加
-        // 得到的仍是同一串 double（同一顺序、同一操作），这就是块粒度可以自由变细的原因。
-        m_blockStartTimes.clear();
-        m_blockStartTimes.reserve((size_t)((n + kBlockStride - 1) / kBlockStride));
-        for (int64_t i = 0; i < (int64_t)n; i += kBlockStride)
-            m_blockStartTimes.push_back(m_tileStartTimes[(size_t)i]);
 
         // ③ 切片 3：粗索引（每锚点一份 TrackVis 时间，26 KB 换掉 103 MB）+ 单调性判据。
         // **必须在锚点记完之后建**（它在 Phase 5 之后，早建会遍历空数组）。
@@ -823,6 +842,23 @@ std::vector<HitsoundTimestampGroup> Timeline::getHitsoundTimestampGroups() const
         }
         groups[groupMap[key]].timestamps.push_back(startTimeAt(i) + offsetSec);
     }
+
+    // ── MultiPlanet 变化音（官方 scrConductor 532-536）──────────────────────
+    // 星数与前一砖不同时，在该砖命中时刻播 VehiclePositive（增星）/ VehicleNegative（减星），
+    // 音量 = 默认音量 × 0.6。参照 Re_ADOJAS `preSynthesizeHitsoundsWithProgress` 同一段。
+    if (m_level && m_level->hasMultiPlanet()) {
+        std::vector<double> up, down;
+        for (int i = 1; i < n; i++) {
+            const int prevN = m_level->planetCountAt(i - 1);
+            const int curN = m_level->planetCountAt(i);
+            if (curN == prevN) continue;
+            const double t = startTimeAt(i) + offsetSec;
+            (curN > prevN ? up : down).push_back(t);
+        }
+        const float vehVol = defaultVol * 0.6f;
+        if (!up.empty()) groups.push_back({"VehiclePositive", vehVol, std::move(up)});
+        if (!down.empty()) groups.push_back({"VehicleNegative", vehVol, std::move(down)});
+    }
     return groups;
 }
 
@@ -845,6 +881,8 @@ int Timeline::findTileIndex(double t) const {
     // 窗口化：先在**块起始时间**上二分（每 kBlockStride 层一份，startTime 单调不减：
     // duration 恒 ≥ 0），再在那一块内二分取"最后一个 startTime <= t"的层。
     // 与原实现（锚点二分 + 4096 层块内扫描）同值：块更细，但单调性前提一样。
+    // 块基点存的是**平移前**的前缀和，所以比较前要减 shift —— 这一步与 Phase 3 的
+    // `m_tileStartTimes[i] -= shift` 是**同一个操作、同一对 double**，结果逐位相同。
     int64_t lo = 0, hi = (int64_t)m_blockStartTimes.size() - 1, aEnd = -1;
     while (lo <= hi) {
         const int64_t m = (lo + hi) / 2;

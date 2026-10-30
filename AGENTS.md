@@ -69,8 +69,8 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
 4. **本地只跑两格**（默认 + render=ON）。其余 6 格**交给 CI** —— CI 那 10 格把它们全覆盖了，
    本地再跑一遍是重复劳动（8 格全量约 5–6 分钟，两格约 1.5 分钟）：
    ```bash
-   ctest --test-dir build            # 默认：42/42
-   ctest --test-dir build-render     # render=ON：47/47（含三层几何 + shader 一致性 + 导出）
+   ctest --test-dir build            # 默认：47/47
+   ctest --test-dir build-render     # render=ON：53/53（含三层几何 + shader 一致性 + 导出）
    ```
    `build-render` 由 `bash build/matrix.sh render` 建（也接受多个配置名，产物在 `build-*/`，
    已 gitignore）。**只有改了 install/export/选项矩阵/CI 本身时**才值得本地多跑几格 ——
@@ -92,11 +92,11 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `d4e8219`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `f64f038`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
-- 测试：render=OFF **42/42**、render=ON **47/47**；CI 10 格（三平台 + 选项矩阵 + render ON/OFF）。
+- 测试：render=OFF **47/47**、render=ON **53/53**；CI 10 格（三平台 + 选项矩阵 + render ON/OFF）。
   最近两次红都在 `windows-default` 且都是**库自有代码**的问题（镜像代码本身没红过）：
   * 2026-10-22 `LevelJsonWriter.cpp` 缺 `<algorithm>`（`std::stable_sort`）→ 已修并加守卫；
   * 2026-10-23 `std_includes` 守卫**自己**在 Windows 红（中文 print 撞 cp1252）→ 已补

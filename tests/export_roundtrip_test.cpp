@@ -391,6 +391,60 @@ int main(int argc, char** argv)
     }
 #endif
 
+    // ── 2026-10-24 新增的两个模型字段（没有夹具覆盖，只能手搓）──────────────
+    // 1) PositionTrack 的 `stickToFloors` 三态 —— 上游把它塞进 `strId2`（0=关 1=开 2=没写），
+    //    不是字符串；导出必须写回，否则"轨道飘走、行星不跟"这条语义就丢了。
+    // 2) `MultiPlanet` 是**新的事件类型**，仍留在 `actions` 里（不是富结构），只有一列：星数。
+    {
+        LevelData lv;
+        lv.angleData = {0, 90, 180, 270, 0, 90};
+        lv.settings.bpm = 120.0f;
+        auto add = [&](LevelData::FastAction::Type t, int floor) {
+            LevelData::FastAction a;
+            a.floor = floor;
+            a.type = t;
+            lv.actions.push_back(a);
+            return lv.actions.size() - 1;
+        };
+        size_t i0 = add(LevelData::FastAction::PositionTrack, 1);
+        lv.actions[i0].val1 = 1.5f; lv.actions[i0].val2 = -2.5f;
+        lv.actions[i0].flag = false; lv.actions[i0].strId2 = 1;   // stick = 开
+        size_t i1 = add(LevelData::FastAction::PositionTrack, 2);
+        lv.actions[i1].strId2 = 0;                                // stick = 关
+        size_t i2 = add(LevelData::FastAction::PositionTrack, 3);
+        lv.actions[i2].strId2 = 2;                                // 事件没写（继承）
+        size_t i3 = add(LevelData::FastAction::MultiPlanet, 4);
+        lv.actions[i3].val1 = 3.0f;                               // 三颗星
+
+        const uint64_t want = exporter::modelDigest(lv);
+        const std::string p = outDir + "/new_fields.adofai";
+        std::string err;
+        if (!exporter::exportLevel(lv, exporter::Format::Adofai, p, err)) {
+            fail("新字段（stick / MultiPlanet）", "导出失败：" + err);
+        } else {
+            LevelData back;
+            if (!back.loadFromFile(p)) {
+                fail("新字段（stick / MultiPlanet）", "读不回来");
+            } else if (exporter::modelDigest(back) != want) {
+                fail("新字段（stick / MultiPlanet）", "往返后建模字段不一致（stick 或 planets 丢了）");
+            } else {
+                bool sawStickOn = false, sawStickOff = false, sawStickAbsent = true, sawPlanets = false;
+                for (const auto& a : back.actions) {
+                    if (a.type == LevelData::FastAction::PositionTrack) {
+                        if (a.strId2 == 1) sawStickOn = true;
+                        else if (a.strId2 == 0) sawStickOff = true;
+                        else if (a.strId2 != 2) sawStickAbsent = false;
+                    }
+                    if (a.type == LevelData::FastAction::MultiPlanet && (int)a.val1 == 3) sawPlanets = true;
+                }
+                if (!sawStickOn || !sawStickOff || !sawStickAbsent || !sawPlanets)
+                    fail("新字段（stick / MultiPlanet）", "三态或星数没原样回来");
+                else
+                    std::printf("OK    stickToFloors 三态 + MultiPlanet 星数（手搓 LevelData 往返）\n");
+            }
+        }
+    }
+
     // ── 角度紧凑存储（上游 2026-10 加的 `releaseAngleData`）──────────────────
     // 压缩成功后 `angleData` 会被 swap 掉、值只留在 AngleStore 里。导出必须照样写得出同一批
     // 角度 —— 所以 LevelJsonWriter 走的是 `angleCount()/angleAt()`，不是直读 `angleData`

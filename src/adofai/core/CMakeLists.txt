@@ -25,6 +25,8 @@ add_library(adofai_core STATIC
     util/AssetPaths.cpp
     util/DataFile.cpp
     util/Logger.cpp
+    # 文件映射（mmap / 平台封装）—— 2026-10-24 从 app 下沉进 core，`DataFile` 用得上
+    util/MappedFile.cpp
     util/Progress.cpp
     # Scheduler 取代了原来的 ThreadPool（上游把线程池改成"可注入调度器"，并加了
     # header-only 的 util/Profile.hpp）。ThreadPool.{hpp,cpp} 已在上游删除。

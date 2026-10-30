@@ -61,6 +61,11 @@ if(ADOFAI_LIB_ENABLE_RENDER)
                 "$<TARGET_FILE_DIR:adofai_geom_probe_test>/assets/shaders"
         COMMENT "拷贝 assets/shaders 到构建目录（geom_probe 按 CWD 找它）")
 
+    # 播放停止（要 render：它验的是停止后场景/拖尾的状态）
+    add_executable(adofai_playback_stop_test playback_stop_test.cpp)
+    target_link_libraries(adofai_playback_stop_test PRIVATE ADOFAI::render)
+    add_test(NAME playback_stop COMMAND adofai_playback_stop_test)
+
     # 相机缩放的纯数学部分（`render/Camera.hpp` 里的投影/视口换算），不建 GL 上下文。
     add_executable(adofai_camera_zoom_test camera_zoom_test.cpp)
     target_link_libraries(adofai_camera_zoom_test PRIVATE ADOFAI::render)
@@ -268,6 +273,28 @@ endif()
 add_executable(adofai_adocao_direct_fields_test adocao_direct_fields_test.cpp)
 target_link_libraries(adofai_adocao_direct_fields_test PRIVATE ADOFAI::core)
 add_test(NAME adocao_direct_fields COMMAND adofai_adocao_direct_fields_test)
+
+# 2026-10-24 新增的六条（五条只链 core；`playback_stop` 要 render，放在下面那个块里）：
+# 动画计时、倒计时姿态、多星球、形状键、粘性轨道。
+add_executable(adofai_anim_timing_test anim_timing_test.cpp)
+target_link_libraries(adofai_anim_timing_test PRIVATE ADOFAI::core)
+add_test(NAME anim_timing COMMAND adofai_anim_timing_test)
+
+add_executable(adofai_countdown_pose_test countdown_pose_test.cpp)
+target_link_libraries(adofai_countdown_pose_test PRIVATE ADOFAI::core)
+add_test(NAME countdown_pose COMMAND adofai_countdown_pose_test)
+
+add_executable(adofai_multiplanet_test multiplanet_test.cpp)
+target_link_libraries(adofai_multiplanet_test PRIVATE ADOFAI::core)
+add_test(NAME multiplanet COMMAND adofai_multiplanet_test)
+
+add_executable(adofai_shape_key_test shape_key_test.cpp)
+target_link_libraries(adofai_shape_key_test PRIVATE ADOFAI::core)
+add_test(NAME shape_key COMMAND adofai_shape_key_test)
+
+add_executable(adofai_sticky_track_test sticky_track_test.cpp)
+target_link_libraries(adofai_sticky_track_test PRIVATE ADOFAI::core)
+add_test(NAME sticky_track COMMAND adofai_sticky_track_test)
 
 # 关键帧 / 逐砖时间轴 / 时间原点的三条（2026-10-21 上游新增，都只链 core）。
 # `time_origin` 盯的是 `separateCountdownTime` 决定的**时间基准**：它一旦错，整条时间线

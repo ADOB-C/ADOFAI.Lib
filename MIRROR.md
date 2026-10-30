@@ -362,6 +362,31 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 顺带一提：上游这轮加了 `scripts/check-gcc.sh`（推之前用真 GCC 全量语法检查）——
 和我的 `std_includes` 守卫是同一类补丁，只是他们走编译器、我走静态扫描。
 
+### 第十次对齐（f64f038，42 个提交）：粘性轨道 / 多星球把 `strId2` 变成了**复用字段**
+
+模型新增两样，都让导出模块的假设失效了一次：
+
+* **`PositionTrack` 的 `stickToFloors` 三态**（0=关 1=开 2=事件没写），上游把它塞进了
+  `FastAction::strId2` —— 而 `strId2` 原本只被 `AnimateTrack` 当 `actionStrTable` 的下标用。
+* **`MultiPlanet`**：新的事件类型，仍留在 `actions` 里，只有一列（星数 `val1`）。
+* 顺带：`tilePositionOffsets` 从"一层一条"变成"一层可多条"（同层 justThisTile 与继承型不再互相覆盖）。
+
+**护栏是怎么报警的**：`.adocao` 往返指纹在 `f24_positiontrack_variants.json` 上不一致
+（`82a4f471…` vs `81ce9722…`）。根因在**我的** `modelDigest`：它对所有类型都拿 `actionStr2(a)`
+当字符串解，而 PositionTrack 的 `strId2` 是 0/1/2 —— 越界下标退化成空串，而池长度在 JSON 与
+`.adocao` 两条路下不同（`.adocao` 的池含 settings 字符串），于是指纹飘了。
+
+三处修：
+
+1. `modelDigest` 改成**按类型**取：AnimateTrack → `actionStr2` 字符串；其余 → `strId2` 数值；
+2. `putAction` 的 PositionTrack 补 `stickToFloors`（只有 `strId2 != 2` 才写 —— 写 `false` 也算
+   "写过"，写成显式默认会破坏继承语义）；
+3. `putAction` 补 `MultiPlanet`（写 `"planets": N`）。**这个类型原先会掉进 `default`，连
+   `eventType` 都不写** —— 会产出坏 JSON，只因为还没有夹具带它而一直没暴露。
+
+为了让后两件能被"看见"，`export_roundtrip` 加了一段**手搓 LevelData**：三种 stick 取值 +
+一个 `MultiPlanet(3)`，导出再解析，断言三态与星数都原样回来。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

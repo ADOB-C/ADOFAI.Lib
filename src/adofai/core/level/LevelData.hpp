@@ -3,7 +3,9 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <map>
 #include <unordered_map>
@@ -38,9 +40,21 @@ struct LevelData {
     // 目的：容器 v7 的 schema 从实际 JSON 自动发现类型/字段，做到"新增事件类型不改格式"。
     // 默认关（false）→ 播放路径的内存与行为完全不变。
     bool preserveRawJson = false;
-    std::vector<std::string> rawActionsJson;
+    // 原始切片（pack 期捕获）：**不再给每条 action 复制 std::string**（那是 44 GB 的真凶）。
+    // 现在存 (offset, length) 指向 `rawBlob`：mmap 加载时直接指向映射区（零拷贝），
+    // 从内存缓冲加载时才复制一份。访问用 rawAction(i) / rawActionCount()。
+    std::string rawBlob;                                  // 只有非 mmap 路径才真正占内存
+    std::vector<std::pair<uint32_t, uint32_t>> rawActionSpans;
     std::string rawDecorationsJson;
     std::string rawSettingsJson;   // settings 对象原样（回写时用它，避免逐键建模）
+    size_t rawActionCount() const { return rawActionSpans.size(); }
+    std::string_view rawAction(size_t i) const {
+        if (i >= rawActionSpans.size()) return {};
+        const auto& s = rawActionSpans[i];
+        return std::string_view(rawBlob.data() + s.first, s.second);
+    }
+    // 拥有文件映射（loadFromFile 用；loadFromBuffer 时不设）
+    std::shared_ptr<class MappedFile> mappedFile;
     // 解析原始成员；失败只警告（pack 会退回旧段），不影响已经解析好的数据。
     bool captureRawMembers(const char* data, size_t length);
     // **v7 容器专用入口**：把一条事件的 JSON 对象喂进来，走与 JSON 路径**同一套**字段映射
@@ -392,7 +406,7 @@ struct LevelData {
         uint16_t strId2 = 0;
         // MoveCamera / RepeatEvents **不留在 actions 里**（keep=false）：它们走 cameraEvents /
         // repeatEvents 两个富结构。这两个枚举值只用于"解析时认出它"。
-        enum Type : uint8_t { Twirl, SetSpeed, PositionTrack, SetHitsound, Bookmark, Pause, AnimateTrack, MoveCamera, RepeatEvents, ColorTrack, RecolorTrack, Flash, MoveTrack, Other, ScaleRadius } type = Other;
+        enum Type : uint8_t { Twirl, SetSpeed, PositionTrack, SetHitsound, Bookmark, Pause, AnimateTrack, MoveCamera, RepeatEvents, ColorTrack, RecolorTrack, Flash, MoveTrack, Other, ScaleRadius, MultiPlanet } type = Other;
         bool flag = false;
         float val1 = 0, val2 = 0;
     };
@@ -432,6 +446,12 @@ struct LevelData {
     // 可选 `wc`：并行剔除时传**本线程自己的克隆**（见 `FloorWindowCache::clone()`）；
     // 不传 = 用共享缓存（单线程路径，语义与以前逐位相同）。
     std::array<double, 2> tilePositionAt(int64_t i, FloorWindowCache* wc = nullptr) const;
+    // 行星枢轴：`stickToFloors=false` 的层返回**未加 PositionTrack 偏移**的原始位置
+    // （默认全 true → 与 tilePositionAt 完全一致）。
+    bool stickyAt(int64_t i) const {
+        return m_tileStick.empty() || (size_t)i >= m_tileStick.size() || m_tileStick[(size_t)i] != 0;
+    }
+    void planetPivotAt(int64_t i, double& x, double& y) const;
     float tileDirectionAt(int64_t i, FloorWindowCache* wc = nullptr) const;
     // 本线程的私有窗口克隆（首次调用克隆一次，随线程存活；level 换了会自动重建）
     FloorWindowCache* threadWindowCache() const;
@@ -467,7 +487,14 @@ struct LevelData {
         float offsetY = 0.0f;
         // 官方语义（对照 Re_ADOJAS 的移植确认）：false = 偏移**继承**到之后所有层；
         // true = **只作用于本层**。消费方见 applyPositionTrackOffsets()。
+        //
+        // ⚠️ 字段顺序：`justThisTile` 必须紧跟两个 offset —— 测试与历史代码用
+        // `{x, y, justThisTile}` 的**位置初始化**；把新字段插在中间会让 `true` 落到别的成员上
+        // （2026-10-27 真踩过：`stick` 插在中间 → 点加型被当成继承型，checkpoint 的 cum 全歪）。
+        // 新字段一律**追加在末尾**，并且要有默认值。
         bool  justThisTile = false;
+        // `stickToFloors`：-1 = 事件没写（继承），0 = 关（行星不跟着轨道动），1 = 开（默认）。
+        int8_t stick = -1;
     };
 
     // Per-tile event data (computed from actions)
@@ -493,7 +520,44 @@ struct LevelData {
         return floor >= 0 && (size_t)floor < tileHitsoundVolumes.size()
                && !std::isnan(tileHitsoundVolumes[(size_t)floor]);
     }
-    std::unordered_map<int, TilePositionOffset> tilePositionOffsets; // sparse
+    // 稀疏：**每层可以有多条**（按文件顺序），不能是"一层一条"——那会让同层的
+    // `justThisTile` 与继承型互相覆盖（2026-10-28 修）。
+    std::unordered_map<int, std::vector<TilePositionOffset>> tilePositionOffsets;
+    // ── 粘性轨道（`stickToFloors`，2026-10-24）─────────────────────────────
+    // 语义（Re_ADOJAS `PositionTrackManager` + `Player.updatePlanetsPosition`）：
+    //   stick = true（默认）→ 行星**跟着**被 PositionTrack 移动后的砖位走；
+    //   stick = false     → 行星走**原始**砖位（轨道自己飘走，行星不跟）。
+    // 只有谱里真的写过 stickToFloors（settings 或事件）时才分配这张表。
+    std::vector<uint8_t> m_tileStick;                     // 1 B/砖；空 = 全 true
+    struct CumOffset { int32_t floor = 0; double x = 0.0, y = 0.0; };  // 到该层为止的累计偏移
+    std::vector<CumOffset> m_cumOffsets;                  // 稀疏（每个事件层一条）
+    bool hasStickOverrides() const { return !m_tileStick.empty(); }
+
+    // ── MultiPlanet（多星布局）────────────────────────────────────────────
+    // 参考实现（Re_ADOJAS `Player.ts` 3050-3160）：逐砖 `numPlanets` + 行星颜色 id 列表 +
+    // 枢轴在列表里的下标。**只有谱里真出现 MultiPlanet 事件时才分配**（默认空 = 恒 2 颗）。
+    struct PlanetList { uint8_t len = 0; uint8_t ids[8] = {}; };
+    std::vector<uint8_t> m_numPlanets;      // 1 B/砖
+    std::vector<uint16_t> m_planetListRef;  // 2 B/砖：去重列表表下标
+    std::vector<uint8_t> m_planetPivotPos;  // 1 B/砖：枢轴在列表中的位置
+    std::vector<PlanetList> m_planetLists;
+    bool hasMultiPlanet() const { return !m_numPlanets.empty(); }
+    int planetCountAt(int64_t i) const {
+        return m_numPlanets.empty() || (size_t)i >= m_numPlanets.size() ? 2 : (int)m_numPlanets[(size_t)i];
+    }
+    // 该砖的行星 id 列表（len 个；调用方不持有指针）。找不到/没事件时返回 2 星默认值。
+    const uint8_t* planetsAt(int64_t i, int& n, int& pivotPos) const {
+        if (m_numPlanets.empty() || (size_t)i >= m_numPlanets.size()) {
+            static const uint8_t kDefault[2] = {0, 1};
+            n = 2; pivotPos = 0; return kDefault;
+        }
+        const PlanetList& l = m_planetLists[m_planetListRef[(size_t)i]];
+        n = l.len;
+        pivotPos = (int)m_planetPivotPos[(size_t)i];
+        if (pivotPos >= n) pivotPos = 0;
+        return l.ids;
+    }
+    bool m_hasStickEvents = false;   // 谱里有没有 PositionTrack 写过 stickToFloors（§粘性轨道）
     std::vector<int> bookmarkFloors;  // Bookmark event floors
 
     // AnimateTrack state overrides (sparse, floor → state)
@@ -580,6 +644,9 @@ private:
     void calculateTilePositions();
     void convertPathToAngles();
     void applyPositionTrackOffsets();
+    // MultiPlanet 逐砖表（参考实现 Re_ADOJAS `Player.ts` 3050-3160 的移植）。
+    // 没有 MultiPlanet 事件时**不分配任何表**（恒 2 颗，零开销）。
+    void buildPlanetTables(const std::vector<std::pair<int64_t, int>>& events);
     static float pathCharToAngle(char c);
 };
 

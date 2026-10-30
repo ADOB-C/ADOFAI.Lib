@@ -6,6 +6,7 @@
 #include "glad/gl_core.hpp"
 #include "core/level/LevelData.hpp"
 #include "render/CullIndex.hpp"
+#include "render/ShapeKey.hpp"
 #include "render/TileShape.hpp"
 #include <glm/glm.hpp>
 #include <cstdint>
@@ -109,13 +110,23 @@ public:
         std::vector<uint32_t> shape;
         std::vector<uint8_t> icon;
     };
-    // 形状键打包：sa/ea 各 20 位（角度 ×100，范围 ±18000），mid 1 位 —— 无冲突
-    static uint64_t packShapeKey(float sa, float ea, bool mid, uint8_t style = 0) {
-        const uint32_t qa = (uint32_t)(int32_t)std::lround(sa * 100.0f) & 0xFFFFFu;
-        const uint32_t qe = (uint32_t)(int32_t)std::lround(ea * 100.0f) & 0xFFFFFu;
-        return (uint64_t)qa | ((uint64_t)qe << 20) | (mid ? (1ull << 40) : 0ull) |
-               ((uint64_t)(style & 0x7u) << 41);
+    // 形状键打包：sa/ea 各 20 位（角度 ×每秒度数），mid 1 位、style 3 位 —— 无冲突。
+    // **build() 与 deriveRange() 必须用同一个 m_shapeSteps**（同一台机器上两者都对同一个
+    // 谱面各算一遍；档位不同 → 键全对不上 → 每块砖都退回形状 0）。
+    uint64_t packShapeKey(float sa, float ea, bool mid, uint8_t style = 0) const {
+        return shapekey::packKey(shapekey::angleKey(sa, m_shapeSteps),
+                                 shapekey::angleKey(ea, m_shapeSteps), mid, style);
     }
+    // 形状表容量（行数上限）：GPU 端是 `kTexW × rows` 的 RGBA32F 纹理。取
+    // `min(kMaxShapeRows, GL_MAX_TEXTURE_SIZE)`。4096 行 = 67 MB（真实谱面只有 215~9349 个形状，
+    // 129,600 砖的 shapes_exhaustive 也在里面）；超过就按 `shapekey::kStepsLadder`
+    // **放粗量化精度**，绝不硬传一张装不下的纹理 —— 那种失败是**静默黑屏**（Issue #2）。
+    static constexpr int kMaxShapeRows = 4096;
+    int shapeTableRows() const;             // min(kMaxShapeRows, GL_MAX_TEXTURE_SIZE)，下限 64
+    size_t shapeTableCapacity() const;      // 上述行数能装多少个形状（GPU/CPU 路 texel 数不同）
+    // 本次 build 实际用的量化档位（诊断用）：每度多少格。100 = 0.01°（基准档，与 7.2.0 逐位相同），
+    // 1 = 1°（最粗，只有"装不下"的谱面才会被放粗到这里）
+    int shapeSteps() const { return m_shapeSteps; }
     // `wc`（可选）= 调用线程自己的 provider 窗口克隆（并行剔除用；nullptr = 共享缓存）
     void deriveRange(const LevelData& level, int64_t i0, int64_t i1, DerivedRange& out,
                      FloorWindowCache* wc = nullptr) const;
@@ -133,6 +144,7 @@ private:
     void destroy();
     void buildStaticGL();
     void buildSlotTable();          // CPU 回退：每形状 193 个槽位坐标 → RG32F 纹理
+    void checkShapeTexture() const;  // 守卫：形状表纹理是否真的建成了（Issue #2 的静默黑屏）
     void destroyStaticGL();
     void ensureDrawList(double vl, double vr, double vb, double vt, double camX, double camY) const;
     void uploadIfNeeded() const;
@@ -150,6 +162,10 @@ private:
     bool m_cpuGeometry = false;
     mutable size_t m_instCapacity = 0;   // 实例缓冲容量（draw() 里会按需增长）
     int m_shapeRows = 0;
+    // 形状 (sa, ea) 的量化档位：**每度多少格**（见 render/ShapeKey.hpp）。**基准 0.01°**，
+    // 只有装不下才开始放粗（0.02 → 0.04 → 0.1 → 0.2 → 0.5 → 1°）；
+    // deriveRange() 必须用同一个值（否则键全对不上）。
+    int m_shapeSteps = shapekey::kStepsLadder[0];
     float m_fill[3] = {1, 1, 1}, m_stroke[3] = {0, 0, 0};
 
     // ---- 每砖常驻 ----
