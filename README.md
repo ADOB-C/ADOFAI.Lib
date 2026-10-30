@@ -174,6 +174,9 @@ if (!adofai::exporter::exportLevel(level, "out.adocao", err, adofai::exporter::O
 * **未知 `eventType` 的 action 会没有** —— 两条解析路径在**读入时**就丢弃它们，不是导出丢的；
 * 未建模的 settings 键、`decorations`、注释、键序、数字字面量的写法（`1e2` 与 `100`）都不保留；
 * `pathData` 型的谱面导出后会**同时**带一份 `angleData`（保真优先于体积；要体积就用 `.adocao`）；
+* **`.adocao` 的打包旋钮也能调**：`Options::packCompress`（默认 `Auto` 会**同时**跑 zstd-19 与
+  lzma 9|EXTREME 取更小的那个 —— 大谱上是两倍压缩时间 + lzma 编码器约 674 MB 内存）、
+  `packLevel`、`packCheckpoints`、`packV7`。上千万层那种规模，挑一个编码器 / 关掉自检能省一大截。
 * **带 v7 事件段的 `.adocao` 可以"无损回写"成 `.adofai`**：这时导出走库自己的
   `exporter::writeV7Json`（`src/adofai/export/LevelV7Json.cpp`）—— 按 schema 把**原始事件 JSON**
   原样吐回来，连装饰物、未知 `eventType`、以及 settings 里我们没建模的键都不丢

@@ -337,17 +337,17 @@ int main(int argc, char** argv)
             if (!a.loadFromFile(pick)) {
                 fail("v7 无损回写", "加载失败：" + pick);
             } else {
-                adofai::adocao::PackOptions opts;
-                opts.withV7Events = true;        // 写 EventSchema + EventColumns
-                opts.v7IncludeLegacy = true;     // 不去重：v6 段有的类型也进 v7（回写需要）
-                std::vector<uint8_t> bytes;
+                // 走**公开 API**：`Options::packV7` 就是"写 v7 事件段且不去重"。
+                exporter::Options o;
+                o.packV7 = true;
                 std::string err;
                 const std::string cont = outDir + "/v7_lossless.adocao";
-                if (!adofai::adocao::packLevel(a, bytes, err, nullptr, opts)) {
-                    fail("v7 无损回写", "pack(withV7Events) 失败：" + err);
-                } else if (!writeRawFile(cont, bytes.data(), bytes.size())) {
+                if (!exporter::exportLevel(a, exporter::Format::Adocao, cont, err, o)) {
+                    fail("v7 无损回写", "exportLevel(packV7=true) 失败：" + err);
+                } else if (readRawFile(cont).empty()) {
                     fail("v7 无损回写", "写不出 " + cont);
                 } else {
+                    const std::vector<char> bytes = readRawFile(cont);
                     LevelData b;
                     if (!b.loadFromFile(cont)) {
                         fail("v7 无损回写", "自己打的 v7 容器读不回来");
@@ -372,11 +372,12 @@ int main(int argc, char** argv)
                             if (!rt.loadFromFile(out)) {
                                 fail("v7 无损回写", "再把导出的明文读回来时失败");
                             } else {
-                                std::vector<uint8_t> again;
                                 std::string e3;
-                                if (!adofai::adocao::packLevel(rt, again, e3, nullptr, opts))
+                                const std::string out2 = outDir + "/v7_repack.adocao";
+                                if (!exporter::exportLevel(rt, exporter::Format::Adocao, out2, e3, o))
                                     fail("v7 无损回写", "重打包失败：" + e3);
-                                else if (again != bytes)
+                                const std::vector<char> again = readRawFile(out2);
+                                if (again != bytes)
                                     fail("v7 无损回写", "容器 → 明文 → 重打包**不是逐字节相同**"
                                                         "（导出丢了顺序或字段）");
                                 else
@@ -386,6 +387,43 @@ int main(int argc, char** argv)
                         }
                     }
                 }
+            }
+        }
+    }
+#endif
+
+#ifdef ADOFAI_EXPORT_TEST_HAVE_ARCHIVE
+    // ── `.adocao` 的打包旋钮（`Options::packCompress` / `packLevel`）───────────────
+    // 四个压缩器都得能写出**自己读得回来**的文件；`verify` 默认开着，所以这条同时也是
+    // 自检通路在四种编码下都成立的证据（默认 `Auto` 之外的那三条以前从没被走过）。
+    {
+        LevelData lv;
+        // 角度列要**大到超过 256 B**，否则 `bestStore` 直接存原样、四种压缩器产出的字节相同
+        // （那样这条用例就只是"能读回来"，验不到编码器切换）。这里 512 个、52 个取值循环，
+        // 字典 + 位打包之后仍然 > 256 B。
+        for (int i = 0; i < 512; ++i) lv.angleData.push_back((double)((i * 15) % 360));
+        lv.settings.bpm = 180.0f;
+        const uint64_t want = exporter::modelDigest(lv);
+        const char* names[] = {"Auto", "Zstd", "Lzma", "None"};
+        const exporter::Options::PackCompress kinds[] = {
+            exporter::Options::PackCompress::Auto, exporter::Options::PackCompress::Zstd,
+            exporter::Options::PackCompress::Lzma, exporter::Options::PackCompress::None};
+        for (int i = 0; i < 4; ++i) {
+            exporter::Options o;
+            o.packCompress = kinds[i];
+            const std::string p = outDir + "/pack_" + names[i] + ".adocao";
+            std::string err;
+            if (!exporter::exportLevel(lv, exporter::Format::Adocao, p, err, o)) {
+                fail(std::string("packCompress=") + names[i], "导出失败：" + err);
+                continue;
+            }
+            LevelData back;
+            if (!back.loadFromFile(p)) {
+                fail(std::string("packCompress=") + names[i], "自己读不回来");
+            } else if (exporter::modelDigest(back) != want) {
+                fail(std::string("packCompress=") + names[i], "往返后建模字段不一致");
+            } else {
+                std::printf("OK    packCompress=%s（%zu B）\n", names[i], readRawFile(p).size());
             }
         }
     }

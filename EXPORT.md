@@ -94,8 +94,10 @@ Header(76 B) │ SectionEntry × sectionCount(40 B each) │ 填充到 8 B │ �
 | 3 | `Actions` | `u32 columnCount(=6)` + 每列 `u64 byteLen + bytes`（见 §3.2）|
 | 4 | `StringPool` | `u32 count` + 每项 `u32 len + bytes`；**`v[0]` 必须是空串** |
 | 5 | `PathData` | `u64 len + bytes`（仅在非空时写）|
-| 6 | `Preserved` | **保留，不要写**（未识别成员的原始字节，留给"无损回写"用）|
-| 7 | `Derived` | **保留，不要写**（预计算/检查点）|
+| 6 | `Preserved` | **别写** —— v7 之后它作废了，被 14/15 两段取代（见下）|
+| 7 | `Derived` | **默认别写**（每 4096 层一份续算快照；`PackOptions::withCheckpoints` 才开）|
+| 14 | `EventSchema` | **v7**：自描述事件类型表 + 字段表（新增事件类型不改格式）|
+| 15 | `EventColumns` | **v7**：按 schema 分列的事件值，**含 v6 段装不下的类型**（装饰物、未知 `eventType`）|
 
 段的 `codec` 字段：`0 = Raw`、`16 = 整帧 zstd`、`17 = 整帧 xz`。
 **未知的段 id 读取方会跳过**（前向兼容），但写入方只该写上面这些。
@@ -136,7 +138,23 @@ u16 planetEase │ u16 trackDisappearAnimation │ u16 trackAnimation │ f32 be
 
 * 所有 `u16` 都是**字符串池下标**（`0` = 空串）；
 * `f32` 按**位模式**原样写（float 必须逐位无损）；
-* 未知 settings 键与今天两条解析路径的行为一致：只读已知字段（无损回写靠 `Preserved` 段，尚未启用）。
+* 未知 settings 键与今天两条解析路径的行为一致：只读已知字段。**真正的无损靠 v7**：
+  `pack` 时开了 `PackOptions{withV7Events,v7IncludeLegacy}`（库里的 `Options::packV7`），
+  `LevelData::rawSettingsJson` 与原始事件切片会一起进容器，读回来之后能原样回写成 `.adofai`
+  （连未建模的 settings 键都不丢）。
+
+### 3.2a ⚠️ `actions.strId2` 是**按类型复用**的（2026-10 起）
+
+这一列不能一律当"字符串池下标"读：
+
+| 事件 | `strId2` 的含义 |
+|---|---|
+| `AnimateTrack` | `StringPool` 的下标（`trackAnimation`）|
+| `PositionTrack` | **粘性开关的三态**：`0` = 关、`1` = 开、`2` = 事件没写（继承上一个状态）|
+| 其余 | 恒 `0` |
+
+写方按"非零才进稀疏掩码"照常写；读方必须按 `eventType` 分派 —— 当字符串解会把 `0/1/2`
+当成池下标，越界后退化成空串（库里的导出指纹就是这么飘过一次的）。
 
 ### 3.2 `Actions`（列式，6 列，顺序固定）
 

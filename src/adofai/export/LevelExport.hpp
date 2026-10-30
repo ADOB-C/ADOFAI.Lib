@@ -53,6 +53,20 @@ struct Options {
     // 默认开：这是"绝不写出自己读不回来的文件"的唯一机械保证，代价是编码/解析时间大约翻倍
     // （解码比编码快得多，实测小谱可忽略，GB 级谱才明显）。关掉请自担。
     bool     verify = true;
+
+    // ── `.adocao` 打包参数（透传给 archive 的 `PackOptions`；只在 ARCHIVE=ON 时生效）──
+    // 为什么要暴露：默认的 `Auto` 会**同时**跑 zstd-19 与 lzma 9|EXTREME、取更小的那个 ——
+    // 大谱上是两倍压缩时间 + lzma 编码器约 674 MB 内存。要压上千万层那种规模，得能单挑
+    // 一个编码器（`Zstd` 快、`None` 只测纯序列化）。
+    enum class PackCompress : uint8_t { Auto = 0, Zstd, Lzma, None };
+    PackCompress packCompress    = PackCompress::Auto;
+    int          packLevel       = 0;       // 0 = 各编码器默认（zstd 19 / lzma 9|EXTREME）
+    bool         packCheckpoints = false;   // `Derived` 段：每 4096 层一份续算快照
+    // 写 **v7 事件段**（EventSchema/EventColumns，且**不去重**：v6 段已有的类型也写进去）。
+    // 开了它，产出的 `.adocao` 才能被**无损**回写成 `.adofai`（`exporter::writeV7Json`）——
+    // 连装饰物、未知 eventType、未建模的 settings 键都不丢。代价是文件里事件存两份。
+    // 需要读谱时 `level.preserveRawJson = true`；没有原始切片时这一段会被跳过（不报错）。
+    bool         packV7          = false;
 };
 
 struct Report {

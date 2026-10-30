@@ -115,6 +115,7 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
 |---|---|
 | [README.md](README.md) | 使用者（Features / Quick Start / 用法 / 导出 / 选项 / 依赖）|
 | [EXPORT.md](EXPORT.md) | 要**自己实现**导出的人（`.adocao` 格式规范）；也用来说明库内 `src/adofai/export/` 的契约 |
+| [CHANGELOG.md](CHANGELOG.md) | 库自己的变更（镜像内容看 `SYNCED_AT`）|
 | [VERSIONING.md](VERSIONING.md) | 版本号怎么读、怎么钉（两个版本号的区别）|
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 维护者（对齐流程、提交前矩阵、消费者验收）|
 | [MIRROR.md](MIRROR.md) | 镜像的细节与**所有实测记录**（含失败机制）|

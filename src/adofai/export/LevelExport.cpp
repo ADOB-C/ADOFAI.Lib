@@ -99,7 +99,8 @@ bool verifyCompressed(const std::vector<uint8_t>& bytes, LevelArchiveKind kind,
     return true;
 }
 
-bool verifyAdocao(const std::vector<uint8_t>& bytes, const LevelData& level, std::string& err)
+bool verifyAdocao(const std::vector<uint8_t>& bytes, const LevelData& level, std::string& err,
+                  const adocao::PackOptions& opts)
 {
     LevelData back;
     std::string reason;
@@ -107,7 +108,30 @@ bool verifyAdocao(const std::vector<uint8_t>& bytes, const LevelData& level, std
         err = "自检失败：写出的 `.adocao` 自己解不开（" + reason + "）";
         return false;
     }
-    // 判据用**"再打一次包，字节必须完全相同"**，而不是比 modelDigest。
+    // **写了 v7 段时"重打包字节相同"这条判据不成立**：v7 段的内容来自 `rawActionSpans`
+    // （pack 期捕获的原始 JSON 切片），而 `unpackLevel` 不会重建它们 —— 再打一次包就没有 v7
+    // 段了，字节必然变短。这时换成两条**更有针对性**的判据：
+    //   ① 建模指纹一致（unpack 丢了建模字段就会被抓到）；
+    //   ② v7 段真的能用：`writeV7Json` 能把它无损回写成 `.adofai`（这正是写 v7 的目的）。
+    if (opts.withV7Events || opts.v7Only) {
+        if (modelDigest(back) != modelDigest(level)) {
+            err = "自检失败：写了 v7 段的 `.adocao` 往返后建模字段不一致";
+            return false;
+        }
+        std::string json;
+        std::string e1;
+        if (!writeV7Json(back, json, e1)) {
+            err = "自检失败：v7 事件段写进去了但回写不出来（" + e1 + "）";
+            return false;
+        }
+        if (json.find("eventType") == std::string::npos) {
+            err = "自检失败：v7 回写出来的明文里没有任何事件";
+            return false;
+        }
+        return true;
+    }
+
+    // 否则用**"再打一次包，字节必须完全相同"**，而不是比 modelDigest。
     // 理由（2026-10-19）：`.adocao` 现在有 13 个段（含 Camera/Repeat/Colour/Flash/MoveTrack），
     // 而 modelDigest 是**逐字段枚举**的 —— 上游每加一类事件，那份枚举就得跟一次，漏了就是
     // "自检绿灯但数据已经丢了"。pack 的产物只由建模字段决定，所以"重打包字节相同"是
@@ -115,7 +139,7 @@ bool verifyAdocao(const std::vector<uint8_t>& bytes, const LevelData& level, std
     // （代价：多打一次包。`Options::verify=false` 可以关掉这一整层。）
     std::vector<uint8_t> again;
     std::string e2;
-    if (!adocao::packLevel(back, again, e2)) {
+    if (!adocao::packLevel(back, again, e2, nullptr, opts)) {
         err = "自检失败：把解出来的 `.adocao` 再打一次包时失败（" + e2 + "）";
         return false;
     }
@@ -131,6 +155,25 @@ bool verifyAdocao(const std::vector<uint8_t>& bytes, const LevelData& level, std
     return true;
 }
 
+// `Options` 里的打包旋钮 → archive 的 `PackOptions`。**显式 switch**，不靠枚举数值对齐
+// （上游改顺序就不会静默错位）。
+adocao::PackOptions toPackOptions(const Options& o)
+{
+    adocao::PackOptions p;
+    switch (o.packCompress) {
+    case Options::PackCompress::Auto: p.compress = adocao::Compress::Auto; break;
+    case Options::PackCompress::Zstd: p.compress = adocao::Compress::Zstd; break;
+    case Options::PackCompress::Lzma: p.compress = adocao::Compress::Lzma; break;
+    case Options::PackCompress::None: p.compress = adocao::Compress::None; break;
+    }
+    p.level = o.packLevel;
+    p.withCheckpoints = o.packCheckpoints;
+    // v7：`v7IncludeLegacy` 必须同时开 —— 否则只写"v6 存不下的类型"，回写时会缺事件
+    // （上游 `--v7-all` 就是这两个一起开）。
+    p.withV7Events = o.packV7;
+    p.v7IncludeLegacy = o.packV7;
+    return p;
+}
 #endif   // ADOFAI_LIB_EXPORT_HAVE_ARCHIVE
 
 }  // namespace
@@ -203,11 +246,12 @@ bool writeTo(Format f, const LevelData& level, std::vector<uint8_t>& out, std::s
                   "或者用没压缩过角度的那份再打 .adocao";
             return false;
         }
-        if (!adocao::packLevel(level, out, err)) {
+        const adocao::PackOptions popts = toPackOptions(opt);
+        if (!adocao::packLevel(level, out, err, nullptr, popts)) {
             if (err.empty()) err = "packLevel 失败";
             return false;
         }
-        if (opt.verify && !verifyAdocao(out, level, err)) {
+        if (opt.verify && !verifyAdocao(out, level, err, popts)) {
             out.clear();
             return false;
         }
