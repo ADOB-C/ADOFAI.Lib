@@ -405,6 +405,23 @@ MSVC 不认 `__builtin_ctz` 这个标识符，即使没人调用也会报错。�
 再解析一次仍然识别得出。上游那份 `scale_radius_raw_test.cpp` **不镜像**（它链 `AdocaoJsonWriter.cpp`，
 而那个文件只活在它自己的 `tests/` 里）。
 
+### 第十一次对齐（6fb4211，18 个提交）：ScaleRadius 真的接到半径上
+
+这轮几乎全是**动画/位置/拖尾**的修正（用户报的"看起来不对"），核心是新增
+`core/timeline/TileXform.hpp` 与 `LevelData::radiusScaleAt()`：**轨道半径比例**终于按
+ScaleRadius 事件逐砖继承（以前半径恒 1，行星绕行半径是错的）。
+
+模型侧值得记的：`m_tileRadiusScale` / `m_radiusScaleEvents` 是**惰性**的（没事件就不分配）；
+`stickyAt()` 修了一个"空表有两种含义"的坑 —— `settings.stickToFloors=false` 且谱里一条
+PositionTrack 都没有时，旧实现会按 true 返回。
+
+新用例 +4（都只链 core）：`fast_tile_motion`（极快砖 <100 µs 被进度阈值钉死）、`stick_anim`、
+`track_visibility`、`trail_window`（点位上限 8192 → 2^18）。上游的 `tests/tools/anim_probe.cpp`
+不镜像（CLI 工具，不上 add_test）。
+
+导出侧这轮**没有报警**：`LevelData` 的新字段都是派生量（`radiusScaleAt` / `m_tileRadiusScale`），
+不进建模指纹，也不需要写回 JSON —— 这正是"指纹只覆盖**输入**字段"那条设计想要的效果。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

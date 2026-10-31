@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 #include <map>
 #include <unordered_map>
@@ -284,6 +285,11 @@ struct LevelData {
     // 直接烘进 tiles[i].position（必须在 finishLoad 里、位置算完之后）。
     void applyRadiusScaleOffsets();
     bool hasScaleRadiusEvents() const { return m_hasScaleRadius; }
+    // 该砖的**轨道半径比例**（ScaleRadius 的继承值，默认 1）。行星绕行半径就用它：
+    // `r(i) → r(i+1)` 在砖内线性插值 —— 与参考实现纯时间函数 `orbitR = tileRadiusScale`
+    // 同口径（2026-10-30 用户："只有在 ScaleRadius 的时候再改变半径"）。
+    // 只有真的出现过 ScaleRadius 事件时才分配（否则空表 → 恒 1）。
+    float radiusScaleAt(int64_t floor) const;
     MoveTransform moveTransformAt(int64_t floor, double timeSec) const;
     float movePad() const { return m_movePad; }
     // 已展开（RepeatEvents 处理完、范围/触发时刻已解析）的 MoveTrack 事件表。
@@ -441,6 +447,9 @@ struct LevelData {
     std::vector<std::vector<uint32_t>> m_moveBlocks;
     bool m_moveReady = false;
     bool m_hasScaleRadius = false;
+    // ScaleRadius：事件表（floor, scale，已排序）+ 继承后的每砖比例（**惰性**：没事件就不分配）
+    std::vector<std::pair<int, float>> m_radiusScaleEvents;
+    std::vector<float> m_tileRadiusScale;
     float m_movePad = 0.0f;
     float m_moveMaxScale = 1.0f;
     // 可选 `wc`：并行剔除时传**本线程自己的克隆**（见 `FloorWindowCache::clone()`）；
@@ -449,7 +458,14 @@ struct LevelData {
     // 行星枢轴：`stickToFloors=false` 的层返回**未加 PositionTrack 偏移**的原始位置
     // （默认全 true → 与 tilePositionAt 完全一致）。
     bool stickyAt(int64_t i) const {
-        return m_tileStick.empty() || (size_t)i >= m_tileStick.size() || m_tileStick[(size_t)i] != 0;
+        // 表为空有两种来源，别混：①`settings.stickToFloors=true` 且没人写过事件 →
+        // 该返回 true；②`settings.stickToFloors=false` 但谱里**一条 PositionTrack 都没有** →
+        // `applyPositionTrackOffsets` 直接早退、表没分配，此时必须按 settings 返回 **false**。
+        // （2026-10-30 踩到：粘性轨道 + 轨道动画时，`stickyAt` 说 true → 行星跟着 MoveTrack
+        // 走了，而谱面明写着不跟。PositionTrack 那边以前没暴露，因为"没有偏移要减"，
+        // 但"跟不跟动画"是另一回事。）
+        if (m_tileStick.empty() || (size_t)i >= m_tileStick.size()) return settings.stickToFloors;
+        return m_tileStick[(size_t)i] != 0;
     }
     void planetPivotAt(int64_t i, double& x, double& y) const;
     float tileDirectionAt(int64_t i, FloorWindowCache* wc = nullptr) const;

@@ -5,9 +5,29 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=9893fdd
-ADOCAO_COMMIT_FULL=9893fddfbc73484f712a129654208b81666a4734
-ADOCAO_COMMIT_DATE=2026-10-29
+ADOCAO_COMMIT=6fb4211
+ADOCAO_COMMIT_FULL=6fb42117724ec0214c728e96b1970c5a566aff21
+ADOCAO_COMMIT_DATE=2026-10-31
+# 本次同步要点（18 个提交；235 个镜像文件逐字节一致）：
+#
+#  1. **ScaleRadius 真的接到半径上**：新增 `core/timeline/TileXform.hpp` 与
+#     `LevelData::radiusScaleAt()`，轨道半径比例按事件逐砖继承（以前半径恒 1 —— 行星绕行半径是错的）。
+#     `m_tileRadiusScale` / `m_radiusScaleEvents` 都是惰性的（没事件不分配）。
+#  2. 修了一串"看起来不对"：极快砖（<100 µs）被进度阈值钉死在砖终点、拖尾点位上限
+#     8192 → 2^18（用户设的采样率被静默吃掉）、sagitta 判据被 governor 的 rateMax 夹死、
+#     appear 动画在淡入窗口前可见、倒计时/暂停整屏黑、关键帧建帧上限 500k 砖 → 4M。
+#  3. `stickyAt()` 修"空表有两种含义"：`settings.stickToFloors=false` 且谱里一条 PositionTrack
+#     都没有时，旧实现按 true 返回（粘性轨道 + 轨道动画时行星会跟着 MoveTrack 走）。
+#  4. 新用例 +4（只链 core）：fast_tile_motion / stick_anim / track_visibility / trail_window。
+#     上游 `tests/tools/anim_probe.cpp` 不镜像（CLI 工具）。
+#
+# **导出侧这轮没报警**：新字段都是派生量，不进建模指纹、也不需要写回 JSON —— 这正是指纹
+# "只覆盖输入字段"那条设计的效果。
+#
+# 另外：上一笔推送（9223ec5）的 CI 是 **cancelled**（不是失败），这一轮会重新覆盖。
+#
+# 上一次同步：9893fdd（ScaleRadius 原始事件进 v7 段 + 两处告警）。
+
 # 本次同步要点（1 个提交；235 个镜像文件逐字节一致）：
 #
 # **上游按本库的反馈把三条都修了**（9893fdd，2026-10-29）：

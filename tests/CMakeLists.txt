@@ -296,6 +296,23 @@ add_executable(adofai_sticky_track_test sticky_track_test.cpp)
 target_link_libraries(adofai_sticky_track_test PRIVATE ADOFAI::core)
 add_test(NAME sticky_track COMMAND adofai_sticky_track_test)
 
+# 2026-10-31 新增四条（都只链 core）：极快砖的行星位移、粘性动画、轨道可见性、拖尾窗口。
+add_executable(adofai_fast_tile_motion_test fast_tile_motion_test.cpp)
+target_link_libraries(adofai_fast_tile_motion_test PRIVATE ADOFAI::core)
+add_test(NAME fast_tile_motion COMMAND adofai_fast_tile_motion_test)
+
+add_executable(adofai_stick_anim_test stick_anim_test.cpp)
+target_link_libraries(adofai_stick_anim_test PRIVATE ADOFAI::core)
+add_test(NAME stick_anim COMMAND adofai_stick_anim_test)
+
+add_executable(adofai_track_visibility_test track_visibility_test.cpp)
+target_link_libraries(adofai_track_visibility_test PRIVATE ADOFAI::core)
+add_test(NAME track_visibility COMMAND adofai_track_visibility_test)
+
+add_executable(adofai_trail_window_test trail_window_test.cpp)
+target_link_libraries(adofai_trail_window_test PRIVATE ADOFAI::core)
+add_test(NAME trail_window COMMAND adofai_trail_window_test)
+
 # 关键帧 / 逐砖时间轴 / 时间原点的三条（2026-10-21 上游新增，都只链 core）。
 # `time_origin` 盯的是 `separateCountdownTime` 决定的**时间基准**：它一旦错，整条时间线
 # （以及打拍音、运镜）都会整体平移 —— 所以单独一条用例，而不是混在 timeline_anchor 里。

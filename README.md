@@ -55,7 +55,7 @@ A Dance of Fire and Ice 关卡（`.adofai`）的 **C++20 静态库**：
 git clone <这个仓库> && cd ADOFAI.Lib
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build          # 默认 47/47
+ctest --test-dir build          # 默认 51/51
 ```
 
 跑一遍"解析 → 时间线 → 解算 → 导出打拍音"（一行 GL 都不需要）：
@@ -286,7 +286,7 @@ target_link_libraries(app PRIVATE ADOFAI::core)
 ctest --test-dir build
 ```
 
-**render=OFF 47 条 / render=ON 53 条**（随模块开关增减）：
+**render=OFF 51 条 / render=ON 57 条**（随模块开关增减）：
 
 | 测试 | 验什么 |
 |---|---|

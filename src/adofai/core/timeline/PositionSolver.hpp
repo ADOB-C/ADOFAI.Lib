@@ -7,6 +7,7 @@
 namespace adofai {
 
 class Timeline;
+class TileAnimation;
 
 // Pure position solver: turns a Timeline + time into red/blue planet positions
 // (or trail sample points). No GL/audio dependency.
@@ -30,7 +31,13 @@ public:
         float fixedRate      = 800.0f; // baseline rate (governor-adjusted)
         float rateMin        = 60.0f;
         float rateMax        = 4000.0f;
-        float maxPoints      = 8192.0f;
+        // **点数硬上限**（环容量），不是"采样率上限"。它曾经是 8192 —— 于是用户把采样率
+        // 调到 2^18 也只会得到 `maxPoints / span = 8192/0.4 = 20480/s`（日志里那条
+        // `trail: rate × span 超过 maxPoints=8192` 就是它）。2.64e6 BPM 那段一秒走 17.6 万砖，
+        // 0.4 s 的窗口 = 7 万砖，8192 点等于**每 8.6 砖一个点** → 折线直接塌成直线。
+        // 现在留 2^18 = 262144 点的硬上限（≈6 MB 顶点 + 6 MB 索引/球），
+        // 超过才截断并告警（此时该缩短窗口，而不是继续加采样率）。
+        float maxPoints      = 262144.0f;
         // true = 这个 rate 是**自适应governor**给出的（受 rateMin/rateMax 夹）；
         // false = 用户显式选的固定率（Launcher/CLI），只受 maxPoints 约束 ——
         // 否则"把采样率调到 64000"会被 rateMax 静默夹回 4000，设置等于没生效。
@@ -48,16 +55,22 @@ public:
     static TrailWindow trailWindow(const Timeline& timeline, double t,
                                    const TrailSamplingConfig& cfg);
 
+    // `anim`（可选）= 该谱的轨道动画（MoveTrack/AnimateTrack 关键帧）。给了就按"粘性轨道"
+    // 语义跟随被动画搬走的砖：枢轴 + 相邻砖的活位置一起算（参考实现
+    // `Player.updatePlanetsPosition` 的 `useStickToFloor` 分支）。nullptr = 现有静态行为。
     static void positionAt(const Timeline& timeline, double t,
-                           glm::dvec2& redOut, glm::dvec2& blueOut);
+                           glm::dvec2& redOut, glm::dvec2& blueOut,
+                           const TileAnimation* anim = nullptr);
     static void positionAtTile(const Timeline& timeline, double t, int tileIdx,
-                               glm::dvec2& redOut, glm::dvec2& blueOut);
+                               glm::dvec2& redOut, glm::dvec2& blueOut,
+                               const TileAnimation* anim = nullptr);
     // ── MultiPlanet（N 颗星）─────────────────────────────────────────────
     // 参考实现 Re_ADOJAS `Player.applyMultiPlanetLayout`（官方 scrPlanet.UpdatePlanet 稳态）：
     // 枢轴星在砖心，移动星在半径 r 处，其余星落在正 N 边形上（边长 = r）。
     // N<=2 时逐位退化成 positionAtTile 的结果（保证既有像素门槛不变）。
     struct PlanetPos { uint8_t id; glm::dvec2 pos; };
-    static void planetsAt(const Timeline& timeline, double t, std::vector<PlanetPos>& out);
+    static void planetsAt(const Timeline& timeline, double t, std::vector<PlanetPos>& out,
+                          const TileAnimation* anim = nullptr);
 
     // Sample [startTime, endTime]. The head is bound to the planet position the
     // caller passes in, so the trail can never lead the planet along the track.
@@ -67,14 +80,16 @@ public:
                                  float sampleRate,
                                  const glm::dvec2& redHead, const glm::dvec2& blueHead,
                                  std::vector<glm::dvec2>& redOut,
-                                 std::vector<glm::dvec2>& blueOut);
+                                 std::vector<glm::dvec2>& blueOut,
+                                 const TileAnimation* anim = nullptr);
 
     // Convenience: window ending at endTime with the given duration.
     static void sampleTrail(const Timeline& timeline, double endTime,
                             float trailDuration, float sampleRate,
                             const glm::dvec2& redHead, const glm::dvec2& blueHead,
                             std::vector<glm::dvec2>& redOut,
-                            std::vector<glm::dvec2>& blueOut);
+                            std::vector<glm::dvec2>& blueOut,
+                            const TileAnimation* anim = nullptr);
 
     // Track covered per second at time t, in tiles, counting the arc swept by
     // the tile's relative angle as path length. This is the metric the optional

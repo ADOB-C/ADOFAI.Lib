@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <tuple>
+#include <utility>
 
 #include "core/level/LevelData.hpp"
 #include "core/timeline/Timeline.hpp"
@@ -11,8 +13,13 @@
 namespace adofai {
 namespace {
 // 关键帧总量上限：超过就停止建帧并告警（超大谱保护；Re_ADOJAS 用 GLOBAL_ANIM_TILE_LIMIT）。
-constexpr size_t kMaxKeyframes = 4'000'000;
-constexpr size_t kMaxAnimatedTiles = 500'000;
+// **2026-10-31 用户："你的各种东西都太保守了"** —— 这两个数是自创的，参考实现只限制
+// "没有任何 AT 事件 + 超过 100000 砖的纯全局动画"。原来的 4M/500k 在 2.64e6 那张谱上
+// （997,664 砖）会**截掉后半张**：全局 Fade 只作用在前 50 万砖，后面的砖一直可见。
+// 现在按"每条关键帧 ~16 B"给预算：20M 条 ≈ 320 MB，够一张百万砖、每砖 20 帧的谱。
+// 真要 2^31 层的谱本来也不能逐砖建帧（那有 Re_ADOJAS 那条 100k 全局动画闸兜着）。
+constexpr size_t kMaxKeyframes = 20'000'000;
+constexpr size_t kMaxAnimatedTiles = 4'000'000;
 }  // namespace
 
 size_t TileAnimation::keyframeCount() const {
@@ -116,6 +123,11 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
     // ---- 2) AnimateTrack：appear/disappear 各类型建帧（**后**建，覆盖 MoveTrack） ----
     // 类型 id 与 Timeline::animId() 一致：1 Extend 2 Assemble 3 Assemble_Far 4 Grow 5 Grow_Spin
     // 7 Fade 8 Drop 9 Rise | 10 Scatter 11 Scatter_Far 12 Retract 13 Shrink 14 Shrink_Spin
+    std::vector<std::tuple<size_t, uint8_t, int64_t>> appearPins;
+    const auto seeded = [](double seed) {
+        const double x = std::sin(seed * 12.9898 + seed * 78.233) * 43758.5453;
+        return x - std::floor(x);
+    };
     {
         const auto& aT = tl.animAppearType();
         const auto& aS = tl.animAppearStart();
@@ -123,11 +135,12 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
         const auto& dT = tl.animDisappearType();
         const auto& dS = tl.animDisappearStart();
         const auto& dE = tl.animDisappearEnd();
-        const auto seeded = [](double seed) {
-            const double x = std::sin(seed * 12.9898 + seed * 78.233) * 43758.5453;
-            return x - std::floor(x);
-        };
         const size_t n = aT.size();
+        // appear 动画要求"淡入之前这块砖根本不存在"，而下面那段通用的 t=0 基准帧
+        // （见「补齐 t=0 的基准帧」）会把透明度补成 1 —— 两者冲突时以 appear 自身为准：
+        // 参考实现每个 case 的第一句都是 `addKeyframe(entity, <通道>, 0, <初始状态>, null)`
+        // （Fade → opacity 0、Grow → scale 0、Assemble → 位移随机量、Drop/Rise → ±8 与 scale 0），
+        // 而且**不是** base 值。记下每个帧的 appear 类型，等基准帧补完再覆盖回初始状态。
         for (size_t i = 0; i < n; ++i) {
             const uint8_t at = aT[i], dt = (i < dT.size()) ? dT[i] : 0;
             if (!at && !dt) continue;
@@ -140,6 +153,7 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
             TileKeyframes& fr = ensureFrame(tile, rStart, rEnd + TileKeyframes::kRangeGrace);
             fr.rangeStart = std::min(fr.rangeStart, rStart);
             fr.rangeEnd = std::max(fr.rangeEnd, rEnd + TileKeyframes::kRangeGrace);
+            if (at) appearPins.emplace_back((size_t)(&fr - m_frames.data()), at, tile);
             // appear：从"起始状态"渐变到 base（位移 0 / 旋转 0 / 缩放 1 / 透明度 1）
             if (at) {
                 const double t0 = aS[i] + animShift, t1 = aE[i] + animShift;
@@ -226,12 +240,50 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
         seed(f.scaleX, 1.0f); seed(f.scaleY, 1.0f); seed(f.opacity, 1.0f);
     }
 
+    // appear 动画的**起始状态**必须压过上面补的 base 基准帧 —— 参考实现每个 case 的第一句
+    // 就是 `addKeyframe(entity, <通道>, 0, <初始状态>, null)`，它写的不是 base，而是"还没出现"。
+    // 漏掉这一步的症状：`trackAnimation: Fade` + `beatsAhead: 8` 的谱面上，行星前方 8 拍
+    // 以外的砖**全都可见**（0.000:1.000 那条基准帧把淡入窗口前的透明度钉成了 1），
+    // 直到各自的 appearStart 才突然消失再淡回来。2026-10-31 实测 2.64e6 那张：t=0.5 时
+    // tile 3~44 全是 alpha=1.0，而参考实现只该看见 ~9 块。
+    for (const auto& p : appearPins) {
+        TileKeyframes& f = m_frames[std::get<0>(p)];
+        switch (std::get<1>(p)) {
+            case 7:   // Fade
+                f.opacity.addKeyframe(0.0, 0.0f);
+                break;
+            case 1:   // Extend
+            case 4:   // Grow
+            case 5:   // Grow_Spin
+                f.scaleX.addKeyframe(0.0, 0.0f);
+                f.scaleY.addKeyframe(0.0, 0.0f);
+                break;
+            case 2: case 3: {   // Assemble(_Far)：t=0 的随机位移与旋转
+                const double range = (std::get<1>(p) == 3) ? 8.0 : 4.0;
+                const double seed = (double)std::get<2>(p) * 7919.0;
+                const double dx = seeded(seed) * range * 2 - range;
+                const double dy = seeded(seed + 1) * range * 2 - range;
+                const double dr = (seeded(seed + 2) * 150 - 75) * 3.14159265358979323846 / 180.0;
+                f.posX.addKeyframe(0.0, (float)dx);
+                f.posY.addKeyframe(0.0, (float)dy);
+                f.rot.addKeyframe(0.0, (float)dr);
+                break;
+            }
+            case 8: case 9:   // Drop / Rise：先藏在上下 8 格、缩放 0
+                f.posY.addKeyframe(0.0, (std::get<1>(p) == 8) ? 8.0f : -8.0f);
+                f.scaleX.addKeyframe(0.0, 0.0f);
+                f.scaleY.addKeyframe(0.0, 0.0f);
+                break;
+            default: break;
+        }
+    }
+
     // 建帧完：缓存每块砖"区间之前/之后是否完全不可见"
     for (TileKeyframes& f : m_frames) {
         const auto visible = [](const TileKeyframes& g, double t) {
-            const float op = g.opacity.empty() ? 1.0f : g.opacity.sample(t);
-            const float sx = g.scaleX.empty() ? 1.0f : g.scaleX.sample(t);
-            const float sy = g.scaleY.empty() ? 1.0f : g.scaleY.sample(t);
+            const float op = g.opacity.sampleOr(t, 1.0f);
+            const float sx = g.scaleX.sampleOr(t, 1.0f);
+            const float sy = g.scaleY.sampleOr(t, 1.0f);
             return !(op <= 0.002f || (std::fabs(sx) <= 0.002f && std::fabs(sy) <= 0.002f));
         };
         f.hiddenBefore = !visible(f, f.rangeStart - 1.0);
@@ -296,11 +348,15 @@ bool TileAnimation::hiddenAt(int64_t tile, double t) const {
     const uint32_t idx = frameIndexFor(tile);
     if (idx == UINT32_MAX) return false;
     const TileKeyframes& f = m_frames[idx];
+    // 倒计时/未开始（t < 0）：参考实现在**第一条关键帧之前**回落到 base（可视）。
+    // 我们的关键帧都在 t >= 0，所以 t < 0 一律"还没进入动画"，按 base 处理 ——
+    // 否则开场/暂停时整条轨道是黑的（2026-10-31 用户："暂停的时候什么都没有了"）。
+    if (t < 0.0) return false;
     if (t < f.rangeStart) return f.hiddenBefore;
     if (t >= f.rangeEnd) return f.hiddenAfter;
-    const float op = f.opacity.empty() ? 1.0f : f.opacity.sample(t);
-    const float sx = f.scaleX.empty() ? 1.0f : f.scaleX.sample(t);
-    const float sy = f.scaleY.empty() ? 1.0f : f.scaleY.sample(t);
+    const float op = f.opacity.sampleOr(t, 1.0f);
+    const float sx = f.scaleX.sampleOr(t, 1.0f);
+    const float sy = f.scaleY.sampleOr(t, 1.0f);
     return op <= 0.002f || (std::fabs(sx) <= 0.002f && std::fabs(sy) <= 0.002f);
 }
 
@@ -309,12 +365,15 @@ bool TileAnimation::sample(int64_t tile, double t, TileAnimSample& out) const {
     if (idx == UINT32_MAX) return false;
     const TileKeyframes& f = m_frames[idx];
     out = TileAnimSample{};
-    out.posX = f.posX.empty() ? 0.0f : f.posX.sample(t);
-    out.posY = f.posY.empty() ? 0.0f : f.posY.sample(t);
-    out.rot = f.rot.empty() ? 0.0f : f.rot.sample(t);
-    out.scaleX = f.scaleX.empty() ? 1.0f : f.scaleX.sample(t);
-    out.scaleY = f.scaleY.empty() ? 1.0f : f.scaleY.sample(t);
-    out.opacity = f.opacity.empty() ? 1.0f : f.opacity.sample(t);
+    // **首帧之前一律回落 base**（参考实现 `sample()` 在首帧之前返回 undefined，调用方用
+    // base）。差别只在倒计时（t < 0）：用 `sample()` 会取到 appear 首帧的 0，
+    // 于是"暂停/开场整条轨道不见"—— 2026-10-31 用户实测就是这句"暂停的时候什么都没有了"。
+    out.posX = f.posX.sampleOr(t, 0.0f);
+    out.posY = f.posY.sampleOr(t, 0.0f);
+    out.rot = f.rot.sampleOr(t, 0.0f);
+    out.scaleX = f.scaleX.sampleOr(t, 1.0f);
+    out.scaleY = f.scaleY.sampleOr(t, 1.0f);
+    out.opacity = f.opacity.sampleOr(t, 1.0f);
     out.animated = true;
     return true;
 }
