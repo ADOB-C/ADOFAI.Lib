@@ -422,6 +422,21 @@ PositionTrack 都没有时，旧实现会按 true 返回。
 导出侧这轮**没有报警**：`LevelData` 的新字段都是派生量（`radiusScaleAt` / `m_tileRadiusScale`），
 不进建模指纹，也不需要写回 JSON —— 这正是"指纹只覆盖**输入**字段"那条设计想要的效果。
 
+### 第十二次对齐（2896268，10 个提交）：渲染与动画的性能收割
+
+* **静止帧不再重传实例缓冲**：2.55M 实例 / 194 MB 每帧 → 0（原来是每帧整块上传）；
+* **可见性改成事件式**：扫 25.4 ms/帧 → 5.1 ms/帧 → 0.42 ms/帧（稳态 0.003 ms）；
+* **形状表上限 4096 → 8192 行**（1° 底档理论上限 7,406 行，超过就撞墙）；
+* **`core/util/Tuning.hpp`**（新，header-only）：可调常数的**运行时覆盖** + 单变量扫描工具；
+  上游据此重扫一遍，发现只有 4 个常量真的绑定到画面上；
+* `Profile.hpp` 的分段计时改成独占 / 跨线程口径（窗口化谱上 fit-all 失效也一起修了）。
+
+新用例 +1：`tileanim_active`（只链 core）。上游 `tests/tools/anim_probe.cpp` 继续不镜像。
+
+**这轮的操作教训**（已写进 AGENTS）：`gh run view` 报 `conclusion=cancelled` 不等于"没验过" ——
+那轮 9/10 个 job 是绿的，只有 `macOS-render-on` 单独被取消（runner 丢了）。看 job 明细，
+然后 `gh run rerun <id> --failed` 补跑那一个。我连着两轮把 cancelled 误读成"未验证"，是不对的。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

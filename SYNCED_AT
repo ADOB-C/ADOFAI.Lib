@@ -5,9 +5,23 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=6fb4211
-ADOCAO_COMMIT_FULL=6fb42117724ec0214c728e96b1970c5a566aff21
-ADOCAO_COMMIT_DATE=2026-10-31
+ADOCAO_COMMIT=2896268
+ADOCAO_COMMIT_FULL=2896268de62c8daa0f9ad132d26ff7bf7a086f4b
+ADOCAO_COMMIT_DATE=2026-11-01
+# 本次同步要点（10 个提交；241 个镜像文件逐字节一致）：
+#
+#  1. 渲染/动画性能收割：静止帧不再重传实例缓冲（2.55M 实例 194 MB/帧 → 0）、可见性改成事件式
+#     （25.4 → 5.1 → 0.42 ms/帧，稳态 0.003）、形状表上限 4096 → 8192 行（1° 底档上限 7,406）。
+#  2. `core/util/Tuning.hpp`（新，header-only）：可调常数的运行时覆盖 + 单变量扫描；上游据此
+#     重扫发现只有 4 个常量真的绑定到画面。`Profile.hpp` 的分段计时改独占/跨线程口径。
+#  3. 新用例 +1：tileanim_active（只链 core）。上游 tests/tools/anim_probe.cpp 不镜像。
+#
+# **操作教训（已写进 AGENTS）**：`conclusion=cancelled` ≠ 没验过 ——
+# 2026-10-31 那轮 9/10 job 绿，只有 macOS-render-on 单独被取消（runner 丢了），整轮才成了
+# cancelled。看 job 明细，再 `gh run rerun <id> --failed` 补跑。已按这个办法补跑。
+#
+# 上一次同步：6fb4211（ScaleRadius 接到半径上 + 一串动画/位置/拖尾修正）。
+
 # 本次同步要点（18 个提交；235 个镜像文件逐字节一致）：
 #
 #  1. **ScaleRadius 真的接到半径上**：新增 `core/timeline/TileXform.hpp` 与

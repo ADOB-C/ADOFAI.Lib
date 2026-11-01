@@ -296,6 +296,11 @@ add_executable(adofai_sticky_track_test sticky_track_test.cpp)
 target_link_libraries(adofai_sticky_track_test PRIVATE ADOFAI::core)
 add_test(NAME sticky_track COMMAND adofai_sticky_track_test)
 
+# 2026-11-01：TileAnimation 的"活跃砖"扫描（事件式可见性）
+add_executable(adofai_tileanim_active_test tileanim_active_test.cpp)
+target_link_libraries(adofai_tileanim_active_test PRIVATE ADOFAI::core)
+add_test(NAME tileanim_active COMMAND adofai_tileanim_active_test)
+
 # 2026-10-31 新增四条（都只链 core）：极快砖的行星位移、粘性动画、轨道可见性、拖尾窗口。
 add_executable(adofai_fast_tile_motion_test fast_tile_motion_test.cpp)
 target_link_libraries(adofai_fast_tile_motion_test PRIVATE ADOFAI::core)

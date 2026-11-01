@@ -9,6 +9,8 @@
 #include "core/level/LevelData.hpp"
 #include "core/timeline/Timeline.hpp"
 #include "core/util/Logger.hpp"
+#include "core/util/Scheduler.hpp"
+#include "core/util/Tuning.hpp"
 
 namespace adofai {
 namespace {
@@ -19,8 +21,18 @@ namespace {
 // 现在按"每条关键帧 ~16 B"给预算：20M 条 ≈ 320 MB，够一张百万砖、每砖 20 帧的谱。
 // 真要 2^31 层的谱本来也不能逐砖建帧（那有 Re_ADOJAS 那条 100k 全局动画闸兜着）。
 constexpr size_t kMaxKeyframes = 20'000'000;
-constexpr size_t kMaxAnimatedTiles = 4'000'000;
+constexpr size_t kMaxAnimatedTilesC = 4'000'000;
+
 }  // namespace
+
+static size_t maxAnimatedTilesT() {
+    static const size_t v = (size_t)adofai::tune::num("maxAnimTiles", (double)kMaxAnimatedTilesC);
+    return v;
+}
+static size_t maxKeyframesT() {
+    static const size_t v = (size_t)adofai::tune::num("maxKeyframes", (double)kMaxKeyframes);
+    return v;
+}
 
 size_t TileAnimation::keyframeCount() const {
     size_t n = 0;
@@ -41,10 +53,10 @@ TileKeyframes& TileAnimation::ensureFrame(int64_t tile, double rangeStart, doubl
     auto it = std::lower_bound(m_index.begin(), m_index.end(), tile,
                                [](const Entry& e, int64_t v) { return e.tile < v; });
     if (it != m_index.end() && it->tile == tile) return m_frames[it->idx];
-    if (m_frames.size() >= kMaxAnimatedTiles) {
+    if (m_frames.size() >= maxAnimatedTilesT()) {
         m_truncated = true;
         static bool warned = false;
-        if (!warned) { LOG_W("TileAnimation: 动画砖数超过上限 %zu，后续砖不建帧", kMaxAnimatedTiles); warned = true; }
+        if (!warned) { LOG_W("TileAnimation: 动画砖数超过上限 %zu，后续砖不建帧", maxAnimatedTilesT()); warned = true; }
         // 返回一个丢弃用的槽（保持引用语义）：把它挂到 tile=-1
         static TileKeyframes dummy;
         dummy = TileKeyframes{};
@@ -97,9 +109,9 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
         for (const Item& it : items) {
             const auto& e = moves[it.ev];
             const double t0 = e.trigger + animShift;
-            TileKeyframes& fr = ensureFrame(it.tile, t0, t0 + e.durSec + TileKeyframes::kRangeGrace);
+            TileKeyframes& fr = ensureFrame(it.tile, t0, t0 + e.durSec + TileKeyframes::rangeGrace());
             fr.rangeStart = std::min(fr.rangeStart, t0);
-            fr.rangeEnd = std::max(fr.rangeEnd, t0 + e.durSec + TileKeyframes::kRangeGrace);
+            fr.rangeEnd = std::max(fr.rangeEnd, t0 + e.durSec + TileKeyframes::rangeGrace());
             // **旋转 = 在砖自身朝向上叠加**：我们的几何已经把砖朝向烘进顶点，而 Re_ADOJAS 的
             // `rotationOffset` 也是"相对其网格"的旋转 —— 两边都不再额外减基准角。
             // （2026-10-21 用 tile 14 的真实帧定案：减基准会让竖直暗列变成横条。）
@@ -150,9 +162,9 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
             if (dt && i < dS.size()) {
                 rStart = std::min(rStart, dS[i] + animShift); rEnd = std::max(rEnd, dE[i] + animShift);
             }
-            TileKeyframes& fr = ensureFrame(tile, rStart, rEnd + TileKeyframes::kRangeGrace);
+            TileKeyframes& fr = ensureFrame(tile, rStart, rEnd + TileKeyframes::rangeGrace());
             fr.rangeStart = std::min(fr.rangeStart, rStart);
-            fr.rangeEnd = std::max(fr.rangeEnd, rEnd + TileKeyframes::kRangeGrace);
+            fr.rangeEnd = std::max(fr.rangeEnd, rEnd + TileKeyframes::rangeGrace());
             if (at) appearPins.emplace_back((size_t)(&fr - m_frames.data()), at, tile);
             // appear：从"起始状态"渐变到 base（位移 0 / 旋转 0 / 缩放 1 / 透明度 1）
             if (at) {
@@ -300,6 +312,24 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
         for (size_t i = 0; i < m_index.size(); ++i) m_index[i].idx = (uint32_t)i;
         m_frames = std::move(reordered);
     }
+    // ---- 区间索引：按 rangeStart 升序 + rangeEnd 的前缀最大值 ----
+    // 逐帧的可见性扫描只需要碰"区间与时间窗相交"的砖（见 hpp 的说明）。
+    {
+        m_rangeOrder.resize(m_frames.size());
+        for (size_t i = 0; i < m_rangeOrder.size(); ++i) m_rangeOrder[i] = (uint32_t)i;
+        std::sort(m_rangeOrder.begin(), m_rangeOrder.end(), [&](uint32_t a, uint32_t b) {
+            return m_frames[a].rangeStart < m_frames[b].rangeStart;
+        });
+        m_rangePrefixMaxEnd.resize(m_rangeOrder.size());
+        double mx = -1e300;
+        for (size_t i = 0; i < m_rangeOrder.size(); ++i) {
+            mx = std::max(mx, m_frames[m_rangeOrder[i]].rangeEnd);
+            m_rangePrefixMaxEnd[i] = mx;
+        }
+    }
+
+    buildFlipEvents();
+
     // 诊断：`ADOCAO_ANIM_DUMP_TILE=<n>` 打印该砖各通道的关键帧（排查"砖为什么看不见"）
     if (const char* dt = std::getenv("ADOCAO_ANIM_DUMP_TILE")) {
         const int64_t want = std::atoll(dt);
@@ -335,13 +365,21 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
             LOG_I("anim-dump tile=%lld 没有动画帧", (long long)want);
         }
     }
-    if (keyframeCount() > kMaxKeyframes) {
+    if (keyframeCount() > maxKeyframesT()) {
         m_truncated = true;
-        LOG_W("TileAnimation: 关键帧总数 %zu 超过上限 %zu", keyframeCount(), kMaxKeyframes);
+        LOG_W("TileAnimation: 关键帧总数 %zu 超过上限 %zu", keyframeCount(), maxKeyframesT());
     }
     LOG_I("TileAnimation: %zu 砖有动画，%zu 条关键帧（%.1f KB，截断=%d）",
           m_index.size(), keyframeCount(),
           (double)(keyframeCount() * sizeof(Channel::Key)) / 1024.0, (int)m_truncated);
+}
+
+bool TileAnimation::rangeOf(int64_t tile, double& start, double& end) const {
+    const uint32_t idx = frameIndexFor(tile);
+    if (idx == UINT32_MAX) return false;
+    start = m_frames[idx].rangeStart;
+    end = m_frames[idx].rangeEnd;
+    return true;
 }
 
 bool TileAnimation::hiddenAt(int64_t tile, double t) const {
@@ -382,6 +420,116 @@ void TileAnimation::activeAt(double t, std::vector<int64_t>& out) const {
     out.clear();
     for (size_t i = 0; i < m_frames.size(); ++i)
         if (m_frames[i].activeAt(t)) out.push_back(m_index[i].tile);
+}
+
+void TileAnimation::queryActive(double t0, double t1, std::vector<uint32_t>& out) const {
+    out.clear();
+    if (m_rangeOrder.empty()) return;
+    if (t1 < t0) std::swap(t0, t1);
+    // 经典"区间刺点"：按 rangeStart 排序 + rangeEnd 的前缀最大值。
+    // 从**最后一个 rangeStart <= t1** 的位置往回走；一旦前缀最大 rangeEnd < t0 就停
+    // ——它之前的所有区间都结束得更早。这样代价是 O(log n + 命中数)，不是"扫到表尾"。
+    // （第一版写成"从前缀第一个 >= t0 的位置往后走"，在百万砖的谱上退化成扫全表 → 5.4 ms/帧。）
+    const size_t n = m_rangeOrder.size();
+    size_t hi = 0, lo = 0, h = n;   // hi = 满足 rangeStart <= t1 的元素个数
+    while (lo < h) {
+        const size_t mid = (lo + h) / 2;
+        if (m_frames[m_rangeOrder[mid]].rangeStart <= t1) lo = mid + 1;
+        else h = mid;
+    }
+    hi = lo;
+    for (size_t i = hi; i-- > 0;) {
+        if (m_rangePrefixMaxEnd[i] < t0) break;    // 更早的区间全部结束在 t0 之前
+        const uint32_t k = m_rangeOrder[i];
+        const TileKeyframes& f = m_frames[k];
+        if (f.rangeEnd < t0) continue;
+        out.push_back(k);
+    }
+    std::sort(out.begin(), out.end());             // 调用方按下标顺序更新（实例缓冲顺序友好）
+}
+
+
+void TileAnimation::buildFlipEvents() {
+    m_flipT.clear(); m_flipFrame.clear(); m_flipHidden.clear();
+    const size_t nFrames = m_frames.size();
+    if (nFrames == 0) return;
+
+    struct Ev { double t; uint32_t frame; uint8_t hidden; };
+    // **分块并行**（`Scheduler::parallelFor`，确定性：块按 index 连续切、各自写自己的输出段）。
+    // 建表是纯函数（只读 m_frames），块与块之间无共享写。
+    const size_t nChunks = std::clamp<size_t>(nFrames / 8192, 1, 32);
+    const size_t per = (nFrames + nChunks - 1) / nChunks;
+    std::vector<std::vector<Ev>> parts(nChunks);
+
+    auto buildChunk = [&](size_t c) {
+        std::vector<Ev>& out = parts[c];
+        const size_t lo = c * per;
+        const size_t hi = std::min(nFrames, lo + per);
+        std::vector<double> ts;
+        for (uint32_t k = (uint32_t)lo; k < (uint32_t)hi; ++k) {
+            const TileKeyframes& f = m_frames[k];
+            ts.clear();
+            const Channel* chans[3] = {&f.opacity, &f.scaleX, &f.scaleY};
+            for (const Channel* ch : chans)
+                for (const auto& key : ch->keys()) ts.push_back(key.time);
+            if (ts.size() >= 2) {
+                std::sort(ts.begin(), ts.end());
+                ts.erase(std::unique(ts.begin(), ts.end()), ts.end());
+                const auto hiddenAtFrame = [&](double t) { return hiddenAt(m_index[k].tile, t); };
+                const auto emit = [&](double t0, double t1, bool a) {
+                    double x = t0, y = t1;
+                    for (int b = 0; b < 5; ++b) {
+                        const double mid = 0.5 * (x + y);
+                        if (hiddenAtFrame(mid) == a) x = mid; else y = mid;
+                    }
+                    out.push_back({y, k, (uint8_t)(a ? 0 : 1)});
+                };
+                for (size_t i = 1; i < ts.size(); ++i) {
+                    const double t0 = ts[i - 1], t1 = ts[i];
+                    if (!(t1 > t0)) continue;
+                    double prevT = t0;
+                    bool prevH = hiddenAtFrame(t0);
+                    for (int g = 1; g <= 2; ++g) {
+                        const double tt = t0 + (t1 - t0) * (double)g / 2.0;
+                        const bool h = hiddenAtFrame(tt);
+                        if (h != prevH) emit(prevT, tt, prevH);
+                        prevT = tt; prevH = h;
+                    }
+                }
+            }
+            // 区间端点：`hiddenAt()` 在 rangeStart 之前返回 hiddenBefore、rangeEnd 之后返回
+            // hiddenAfter —— 这两个切换不在任何 tween 里，必须补成事件。
+            out.push_back({f.rangeStart, k, (uint8_t)(hiddenAt(m_index[k].tile, f.rangeStart) ? 1 : 0)});
+            out.push_back({f.rangeEnd, k, (uint8_t)(f.hiddenAfter ? 1 : 0)});
+        }
+    };
+    Scheduler::instance().parallelFor(nChunks, 1, Lane::Background,
+                                     [&](size_t lo, size_t hi) { for (size_t c = lo; c < hi; ++c) buildChunk(c); });
+
+    size_t total = 0;
+    for (const auto& v : parts) total += v.size();
+    m_flipT.reserve(total); m_flipFrame.reserve(total); m_flipHidden.reserve(total);
+    for (const auto& v : parts)
+        for (const Ev& e : v) { m_flipT.push_back(e.t); m_flipFrame.push_back(e.frame); m_flipHidden.push_back(e.hidden); }
+
+    // 按时间排序（同时刻按帧下标，保证确定性）
+    const size_t n = m_flipT.size();
+    m_flipOrder.resize(n);
+    for (size_t i = 0; i < n; ++i) m_flipOrder[i] = (uint32_t)i;
+    std::vector<double> tCopy = m_flipT;
+    std::vector<uint32_t> fCopy = m_flipFrame;
+    std::vector<uint8_t> hCopy = m_flipHidden;
+    std::stable_sort(m_flipOrder.begin(), m_flipOrder.end(), [&](uint32_t a, uint32_t b) {
+        if (tCopy[a] != tCopy[b]) return tCopy[a] < tCopy[b];
+        return fCopy[a] < fCopy[b];
+    });
+    for (size_t i = 0; i < n; ++i) {
+        m_flipT[i] = tCopy[m_flipOrder[i]];
+        m_flipFrame[i] = fCopy[m_flipOrder[i]];
+        m_flipHidden[i] = hCopy[m_flipOrder[i]];
+    }
+    m_flipOrder.clear();
+    m_flipOrder.shrink_to_fit();
 }
 
 }  // namespace adofai

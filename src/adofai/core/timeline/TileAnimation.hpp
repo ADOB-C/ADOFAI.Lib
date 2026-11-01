@@ -4,6 +4,8 @@
 //   * 只有**真的有动画**的砖才建时间轴（稀疏：`排序的砖号 + 连续存储`，不做 per-tile map）；
 //   * 每帧只对"活跃砖"做采样（活跃区间按 start 排序 + 前缀 max end，二分定位）；
 //   * 采样 = 每通道一次二分 + 一次缓动，**不做分配**（输出写进调用方的结构体）。
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -43,15 +45,85 @@ public:
     // 区间外走建帧时缓存好的 hiddenBefore/hiddenAfter（O(1)），区间内才采样。
     bool hiddenAt(int64_t tile, double t) const;
 
+    // 该砖的活跃区间（没有动画帧时返回 false）。事件式可见性要用它定采样范围。
+    bool rangeOf(int64_t tile, double& start, double& end) const;
+
+    // **翻转事件**（建帧时算好）：每块砖"从可见翻成不可见 / 翻回来"的时刻，按时间升序。
+    // 逐帧只处理落进 (lastT, t] 的事件 —— 实测 2.64e6 那张谱：每砖恰好 2.00 个事件、
+    // 共 199 万个，60 fps 摊下来每帧 212 个（对比"扫活跃砖"每帧 25 万次判定）。
+    // 代价在建帧：约 0.7~1.0 s（一次性）、13 B/事件。
+    size_t flipEventCount() const { return m_flipT.size(); }
+    const std::vector<double>&   flipTimes()  const { return m_flipT; }
+    const std::vector<uint32_t>& flipFrames() const { return m_flipFrame; }
+    const std::vector<uint8_t>&  flipStates() const { return m_flipHidden; }
+    bool    flipEventsReady() const { return !m_flipT.empty(); }
+
     // 采样：tile 不在索引里 → 返回 false（调用方走"无动画"快路径）。
     bool sample(int64_t tile, double t, TileAnimSample& out) const;
 
     // 活跃砖（活跃区间覆盖 t）—— 供将来的"只处理活跃砖"优化用；现在是纯查询。
     void activeAt(double t, std::vector<int64_t>& out) const;
 
+    // **只扫会变的那一小撮**：返回"活跃区间与 [t0, t1] 相交"的帧下标（= `entries()` 的下标）。
+    // 为什么这样就够：区间**之外**的砖，`hiddenAt()` 返回的是建帧时缓存好的
+    // `hiddenBefore/hiddenAfter`（与时间无关）—— 只要时间没跨过它的区间，它的可见性不可能变。
+    // 于是逐帧不必扫全部动画砖（1M 砖那张谱实测 24.7 ms），只扫时间窗覆盖到的几千块。
+    // 排序按 rangeStart，配一个"前缀最大 rangeEnd"，二分 + 回退即可。
+    void queryActive(double t0, double t1, std::vector<uint32_t>& out) const;
+
+    // **增量可见性扫描**（逐帧用）：语义 = 对每块动画砖算 `hiddenAt(tile, t)`，
+    // 与上次不同就把新状态写进 `state` 并回调 `onFlip(tile, hidden)`。
+    // 实现上只碰"区间与 (lastT, t] 相交"的砖（区间外是常量，见 queryActive 的说明），
+    // 全扫只发生在第一次和**时间跳变 > 1 s**（seek / 停止 / 换谱）时。
+    // `state`（每砖 2 = 未知）与 `lastT` 由调用方持有，跨帧递增。
+    template <typename F>
+    void updateVisibility(double t, std::vector<uint8_t>& state, double& lastT, F&& onFlip) const {
+        if (state.size() != m_index.size()) { state.assign(m_index.size(), 2); lastT = -1e300; }
+        const auto apply = [&](uint32_t k) {
+            const uint8_t hidden = hiddenAt(m_index[k].tile, t) ? 1 : 0;
+            if (state[k] == hidden) return;
+            state[k] = hidden;
+            onFlip(m_index[k].tile, hidden != 0);
+        };
+        // 什么时候必须全扫：第一次、时间跳变 > 1 s、**时间倒退**（倒放/seek）、跨过 t=0
+        // （t<0 一律可见，那一刻所有砖同时翻状态，不属于任何区间事件）。
+        const bool crossedZero = (lastT < 0.0) != (t < 0.0);
+        const bool full = lastT < -1e299 || crossedZero || t < lastT || !(std::fabs(t - lastT) <= 1.0);
+        if (full) {
+            for (uint32_t k = 0; k < (uint32_t)m_index.size(); ++k) apply(k);
+            if (!m_flipT.empty())
+                m_flipCursor = (size_t)(std::lower_bound(m_flipT.begin(), m_flipT.end(), t) - m_flipT.begin());
+        } else if (!m_flipT.empty()) {
+            // **事件式**：只处理 (lastT, t] 里的事件，事件自带"新状态"，不用再采样。
+            while (m_flipCursor < m_flipT.size() && m_flipT[m_flipCursor] <= t) {
+                const uint32_t k = m_flipFrame[m_flipCursor];
+                const uint8_t h = m_flipHidden[m_flipCursor];
+                ++m_flipCursor;
+                if (state[k] == h) continue;
+                state[k] = h;
+                onFlip(m_index[k].tile, h != 0);
+            }
+        } else {
+            queryActive(std::min(lastT, t), std::max(lastT, t), m_scratch);
+            for (uint32_t k : m_scratch) apply(k);
+        }
+        lastT = t;
+    }
+
 private:
     std::vector<Entry> m_index;               // 按 tile 升序（二分查找）
     std::vector<TileKeyframes> m_frames;      // 与 m_index 平行
+    // 区间索引（build 末尾建）：按 rangeStart 升序的帧下标 + 其 rangeEnd 的前缀最大值。
+    std::vector<uint32_t> m_rangeOrder;
+    std::vector<double> m_rangePrefixMaxEnd;
+    // 翻转事件（并行数组，按时间升序）：13 B/事件
+    std::vector<double>   m_flipT;
+    std::vector<uint32_t> m_flipFrame;
+    std::vector<uint8_t>  m_flipHidden;
+    std::vector<uint32_t> m_flipOrder;   // 排序用的临时下标（build 后释放）
+    mutable size_t m_flipCursor = 0;     // 逐帧推进用（渲染线程单线程）
+    void buildFlipEvents();
+    mutable std::vector<uint32_t> m_scratch;   // queryActive 的复用缓冲（渲染线程单线程用）
     bool m_truncated = false;
 
     uint32_t frameIndexFor(int64_t tile) const;   // 返回 UINT32_MAX = 没有

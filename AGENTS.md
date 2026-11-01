@@ -69,8 +69,8 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
 4. **本地只跑两格**（默认 + render=ON）。其余 6 格**交给 CI** —— CI 那 10 格把它们全覆盖了，
    本地再跑一遍是重复劳动（8 格全量约 5–6 分钟，两格约 1.5 分钟）：
    ```bash
-   ctest --test-dir build            # 默认：51/51
-   ctest --test-dir build-render     # render=ON：57/57（含三层几何 + shader 一致性 + 导出）
+   ctest --test-dir build            # 默认：52/52
+   ctest --test-dir build-render     # render=ON：58/58（含三层几何 + shader 一致性 + 导出）
    ```
    `build-render` 由 `bash build/matrix.sh render` 建（也接受多个配置名，产物在 `build-*/`，
    已 gitignore）。**只有改了 install/export/选项矩阵/CI 本身时**才值得本地多跑几格 ——
@@ -87,16 +87,19 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
    XDG_CACHE_HOME=/tmp/gh-cache gh run view <id>
    XDG_CACHE_HOME=/tmp/gh-cache gh run view <id> --log | grep -E "FAIL|tests passed"
    ```
-   另外：只改 `**.md` / `SYNCED_AT` / `LICENSE` / `NOTICE` 的提交**压根不会触发 CI**
+   **看到 `conclusion=cancelled` 别急着当成"没验过"**：看 job 明细。2026-10-31 那轮 9/10 绿，
+  只有 `macOS-render-on` 单独被取消（runner 丢了），整轮结论才成了 cancelled —— 用
+  `gh run rerun <id> --failed` 补跑那一个 job 即可。
+  另外：只改 `**.md` / `SYNCED_AT` / `LICENSE` / `NOTICE` 的提交**压根不会触发 CI**
    （workflow 里的 `paths-ignore`）—— 那种推完既没有 run 也没有邮件，不用去找。
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `6fb4211`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `2896268`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
-- 测试：render=OFF **51/51**、render=ON **57/57**；CI 10 格（三平台 + 选项矩阵 + render ON/OFF）。
+- 测试：render=OFF **52/52**、render=ON **58/58**；CI 10 格（三平台 + 选项矩阵 + render ON/OFF）。
   最近两次红都在 `windows-default` 且都是**库自有代码**的问题（镜像代码本身没红过）：
   * 2026-10-22 `LevelJsonWriter.cpp` 缺 `<algorithm>`（`std::stable_sort`）→ 已修并加守卫；
   * 2026-10-23 `std_includes` 守卫**自己**在 Windows 红（中文 print 撞 cp1252）→ 已补
