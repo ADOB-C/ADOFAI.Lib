@@ -110,7 +110,7 @@ macOS 绿、MinGW 红。上游 2026-11-02 已定案（它 `TODO.md` 里那条"Li
 
 ## 当前状态（2026-10）
 
-- 对齐点：**ADOCAO `7f09695`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
+- 对齐点：**ADOCAO `ae8eb7c`**（见 [SYNCED_AT](SYNCED_AT)）。注意 ADOCAO **重写过历史**，
   2026-10 之前的旧 sha 全部失效。
 - P1–P6 完成。**六个模块**：core / archive / **export**（库自有的写方）/ audio /
   audio_device / render。
