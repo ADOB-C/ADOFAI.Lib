@@ -5,9 +5,28 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=7f09695
-ADOCAO_COMMIT_FULL=7f0969548e2c47436d8b67d6bbc3af01377b4126
+ADOCAO_COMMIT=ae8eb7c
+ADOCAO_COMMIT_FULL=ae8eb7c773cb4162c2eebdb2bdf6554a3af40566
 ADOCAO_COMMIT_DATE=2026-11-03
+# 本次同步要点（15 个提交；新增 4 个文件，全部逐字节一致）：
+#
+#  1. **DLC 长按带的渲染**：`render/HoldBands.{hpp,cpp}` + 两个新 shader
+#     `assets/shaders/hold.{vert,frag}`（+ `Shaders.hpp` 里的 `kHoldVertSrc`/`kHoldFragSrc`）。
+#     上游为此反复改了 4 轮贴图（"瞎猜"→按官方 holdTex.png 实测特征：多轮彩虹）。
+#  2. 长按的语义修正：透明度跟随起点砖（AnimateTrack appear/disappear + MoveTrack alpha）、
+#     暂停时不再消失（参考是常驻 + 完成度 clamp）、拖尾走 positionAtTile + 滑动圆心。
+#  3. 库这边把 `HoldBands.cpp` 接进 render 目标；`check_shader_fallback.py` 补上 hold 这一对
+#     （之前是硬编码清单，新 shader 会**静默漏验**）→ 顺手加了"资产里每个 shader 都必须登记"
+#     的覆盖检查（负向对照：临时塞一个 zz_fake.frag 会 FAIL）。
+#
+# ⚠️ **上一轮（ff0053a）的 windows-default 红了**，根因不在镜像里，而在**我们的根 CMakeLists**：
+# 少了 `-ffp-contract=off`。GCC 默认 `fast`、Clang 默认 `on`，FMA 收缩时机不同 → 同一份源码
+# 在不同平台算出差 1 ULP 的 double；症状正是 `adocao_window` 的「BPM 1612/9000 逐位不一致」。
+# 上游 2026-11-02 已定案并加进它的根 CMakeLists（TODO 里那条"Linux 偶发红"就是这个），
+# 我们没抄。已补。
+#
+# 上一次同步：7f09695（PositionTrack 四富字段 + DLC 长按解析）。
+
 # 本次同步要点（17 个提交；243 个镜像文件逐字节一致）：
 #
 #  1. **PositionTrack 接上四个富字段**：rotation / scale / opacity / relativeTo（权威的

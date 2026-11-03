@@ -11,6 +11,8 @@ add_library(adofai_render STATIC
     TileMesh.cpp
     Planet.cpp
     PlanetTrail.cpp
+    # DLC 长按带（2026-11-03）：按官方 holdTex.png 的实测特征画多轮彩虹 + 透明度跟随起点砖
+    HoldBands.cpp
     # 场景组装（相机 / 剔除 / 绘制顺序的**无 GL 部分**），2026-10-23 上游从 app 挪进 render。
     LevelScene.cpp)
 

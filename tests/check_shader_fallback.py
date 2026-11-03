@@ -30,6 +30,9 @@ CHECKS = [
     # 闪光（2026-10-18 新增，`Flash` 事件）。
     ("kFlashVertSrc", "flash.vert"),
     ("kFlashFragSrc", "flash.frag"),
+    # DLC 长按带（2026-11-03 新增，`Hold` 事件）。
+    ("kHoldVertSrc", "hold.vert"),
+    ("kHoldFragSrc", "hold.frag"),
     # 注：icon.vert / icon.frag 已被上游删除（图标并入 tile.vert 的几何展开），
     # 所以这里也不再校验它们。
     #
@@ -40,6 +43,27 @@ CHECKS = [
 ]
 
 
+def check_coverage(root: Path) -> int:
+    """`assets/shaders/*` 里的每个文件都必须在 `CHECKS` 里 —— 否则"新增 shader 忘了登记"
+    会让这份校验静默漏掉它（2026-11-03 的 `hold.*` 就是这么漏的）。"""
+    listed = {f for _, f in CHECKS}
+    shader_dir = root / "assets" / "shaders"
+    on_disk = sorted(p.name for p in shader_dir.iterdir() if p.suffix in (".vert", ".frag"))
+    missing = [n for n in on_disk if n not in listed]
+    stale = [(c, f) for c, f in CHECKS if not (shader_dir / f).exists()]
+    bad = 0
+    for n in missing:
+        print(f"  资产里有但没登记（不会被校验）：assets/shaders/{n}")
+        bad += 1
+    for c, f in stale:
+        print(f"  登记了但资产里没有：{c} → {f}")
+        bad += 1
+    if bad:
+        print(f"\nFAIL: {bad} 处 shader 清单与 assets/shaders/ 不一致")
+        return 1
+    return 0
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: check_shader_fallback.py <源码树根（含 src/ 与 assets/）>")
@@ -47,6 +71,7 @@ def main():
     root = Path(sys.argv[1])
     header = root / "src" / "adofai" / "render" / "Shaders.hpp"
     shader_dir = root / "assets" / "shaders"
+    rc_cov = check_coverage(root)
 
     if not header.exists():
         print(f"FAIL: 找不到 {header}")
@@ -89,8 +114,9 @@ def main():
     if bad:
         print(f"\nFAIL: {bad} 处不一致 —— 内嵌回退 GLSL 改了就要同步改 assets/shaders/（反之亦然）")
         return 1
-    print(f"OK: 内嵌回退 GLSL 与 assets/shaders/ 逐字一致（{len(CHECKS)} 对）")
-    return 0
+    print(f"OK: 内嵌回退 GLSL 与 assets/shaders/ 逐字一致（{len(CHECKS)} 对，"
+          f"且资产里没有漏登记的）")
+    return 0 if rc_cov == 0 else 1
 
 
 if __name__ == "__main__":

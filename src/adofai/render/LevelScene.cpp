@@ -1,4 +1,5 @@
 #include "render/LevelScene.hpp"
+#include <fstream>
 
 #include <cstdio>
 #include <cstdlib>   // getenv（诊断转储）
@@ -51,6 +52,7 @@ LevelScene::~LevelScene() {
     delete m_tileShader;
     delete m_flashShader;
     delete m_planetShader;
+    delete m_holdShader;
     delete m_trailShader;
     delete m_highlightShader;
 }
@@ -58,7 +60,10 @@ LevelScene::~LevelScene() {
 bool LevelScene::compileShaders() {
     auto compileShader = [](Shader& s, const char* vp, const char* fp,
                             const char* vs, const char* fs) -> bool {
-        if (s.compileFile(vp, fp)) return true;
+        // 诊断（临时）：把实际参与编译的源码长度/首行打出来 —— 资产包可能藏着旧版本。
+        if (s.compileFile(vp, fp)) {
+            return true;
+        }
         LOG_W("Shader file loading failed, using inline fallback");
         return s.compile(vs, fs);
     };
@@ -66,6 +71,12 @@ bool LevelScene::compileShaders() {
     // （查 CPU 展开表，见 assets/shaders/tile_cpu.vert）。选哪支靠**试编**，不按版本号猜 ——
     // 同 `archive/LzmaMtCompat` 的教训：版本区间 ≠ 实际能力（有的驱动给 4.1 上下文但 GLSL
     // 编译器的 fma 行为不同，反过来也有）。高亮与砖共用同一支 VS，只有 FS 不同。
+    // **路径必须用 std::string 保活**：`resolveAsset(...).c_str()` 传参时临时对象立刻析构，
+    // 指针悬空 → 文件永远读不到 → 静默退回内嵌串（2026-10-17 踩过一次，2026-11-03 又在
+    // 长按着色器上重演：程序里只剩顶点 shader 的 uniform，uColor/uOpacity 全是 -1 → 带子全黑）。
+    const std::string holdVp = resolveAsset("assets/shaders/hold.vert");
+    const std::string holdFp = resolveAsset("assets/shaders/hold.frag");
+
     auto compileTile = [&](const char* vsFile, const char* vsInline) -> bool {
         // ⚠️ 路径必须存成 std::string：`resolveAsset(...).c_str()` 绑到 `const char*` 上时，
         // 那个临时 string 在本行结束时就被销毁 → 指针悬空 → 文件永远"加载失败"、静默退回内嵌串。
@@ -100,7 +111,8 @@ bool LevelScene::compileShaders() {
     LOG_I("砖块几何：%s", m_cpuGeometry ? "CPU 展开表（GL 3.3 回退）" : "GPU 按形状表展开（GLSL 4.10, fma）");
 
     if (!compileShader(*m_planetShader, resolveAsset("assets/shaders/planet.vert").c_str(), resolveAsset("assets/shaders/planet.frag").c_str(), Shaders::kPlanetVertSrc, Shaders::kPlanetFragSrc)
-     || !compileShader(*m_trailShader, resolveAsset("assets/shaders/trail.vert").c_str(), resolveAsset("assets/shaders/trail.frag").c_str(), Shaders::kTrailVertSrc, Shaders::kTrailFragSrc)) {
+     || !compileShader(*m_trailShader, resolveAsset("assets/shaders/trail.vert").c_str(), resolveAsset("assets/shaders/trail.frag").c_str(), Shaders::kTrailVertSrc, Shaders::kTrailFragSrc)
+     || !compileShader(*m_holdShader, holdVp.c_str(), holdFp.c_str(), Shaders::kHoldVertSrc, Shaders::kHoldFragSrc)) {
         LOG_E("Shader compilation failed");
         return false;
     }
@@ -169,6 +181,7 @@ bool LevelScene::init(const SceneConfig& cfg, const LevelData& level, const Time
     m_tileShader = new Shader();
     m_planetShader = new Shader();
     m_trailShader = new Shader();
+    m_holdShader = new Shader();
     m_highlightShader = new Shader();
     if (!compileShaders()) return false;
     {   // Flash：全屏三角形（无 VBO），一个空 VAO 就够
@@ -601,6 +614,20 @@ void LevelScene::render(Camera& camera, const Timeline& timeline, bool playing,
                 pl->trail->draw(*m_trailShader, camera, camera.targetX(), camera.targetY());
             }
         }
+    }
+
+    // Hold 长按带（砖之上、行星之下，与参考 renderOrder 105 vs 110 一致）。
+    // **懒建在这里**：`buildTileAnimation` 被调用的时刻 timeline 还没建好（实测 startTimes=0），
+    // 而 render() 拿到的 timeline 一定已经 precalculateTiming 过。
+    if (m_holdBands == nullptr && m_level != nullptr && !m_level->m_tileHoldLength.empty() &&
+        timeline.tileCount() >= (int64_t)m_level->tiles.size()) {
+        m_holdBands = new HoldBands();
+        m_holdBands->build(*m_level, timeline);
+    }
+    if (m_holdBands != nullptr && !m_holdBands->empty()) {
+        profile::Scoped _s("hold");
+        m_holdBands->draw(*m_holdShader, camera, camera.targetX(), camera.targetY(), timeInLevel,
+                          *m_level, m_tileAnim.get());
     }
 
     // Planets

@@ -6,6 +6,16 @@ project(ADOFAI.Lib
     HOMEPAGE_URL "https://github.com/ADOB-C/ADOFAI.Lib"
     LANGUAGES CXX)
 
+# **禁止 FMA 收缩**（照抄上游 2026-11-02 的定案）：GCC 默认 `-ffp-contract=fast`、Clang 默认
+# `on`，两边把 `a*b+c` 融成 FMA 的**时机不同** → 同一份源码在不同平台上算出差 1 ULP 的 double。
+# 症状正好是本库 CI 上那条「windows-default 的 `adocao_window`：BPM 1612/9000 逐位不一致」——
+# macOS 默认编译是绿的，MinGW 红。关掉收缩后所有平台走同一套舍入，逐位对拍（窗口重算、
+# `.adocao` checkpoints、像素门槛）才真正跨平台可比。代价：少数 `a*b+c` 不再用 FMA
+# （上游实测帧时间无可测变化）。
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-ffp-contract=off)
+endif()
+
 # ── Options ──────────────────────────────────────────────────────────────────
 # 默认值按 PLAN.md §6 的表。RENDER 默认 OFF 是一条承诺，见 §5：
 # OFF 时不 find_package(OpenGL/glfw)、公共头里不出现 GL 类型、装出来的 target 里没有 ADOFAI::render。

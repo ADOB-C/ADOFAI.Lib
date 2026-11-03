@@ -3089,6 +3089,17 @@ bool LevelData::parseLegacy(const std::string& jsonStr, ProgressCb onProgress, b
             else if (et == "Flash") { jsonReadFlashEvent(a, flashEvents); continue; }
             else if (et == "MoveTrack") { jsonReadMoveTrackEvent(a, moveTrackEvents); continue; }
             else if (et == "ScaleRadius") act.type = FastAction::ScaleRadius;
+            else if (et == "Hold") {
+                // DLC 长按。**两条解析路径必须同时认它** —— 这条就是踩过的坑：只改了快路径，
+                // 而 Fledgling 因非法尾逗号走的是 DOM 路径，Hold 被 `continue` 丢掉，带子永远不建。
+                act.type = FastAction::Hold;
+                act.val1 = (a.HasMember("duration") && a["duration"].IsNumber())
+                               ? (float)std::trunc(a["duration"].GetDouble()) : -1.0f;
+                act.val2 = (a.HasMember("distanceMultiplier") && a["distanceMultiplier"].IsNumber())
+                               ? (float)(a["distanceMultiplier"].GetDouble() / 100.0) : 1.0f;
+                actions.push_back(act);
+                continue;
+            }
             else continue;
             if (act.type == FastAction::SetSpeed) {
                 if (a.HasMember("speedType") && std::string(a["speedType"].GetString()) == "Multiplier") {
@@ -3183,6 +3194,7 @@ bool LevelData::finishLoad(ProgressCb onProgress, bool exportOnly) {
     if (onProgress) onProgress(0.40f, "Processing actions...");
     refreshDerivedCaches();
     if (!exportOnly) {
+        applyHoldOffsets();
         applyPositionTrackOffsets();
         applyRadiusScaleOffsets();
     }
@@ -3779,6 +3791,32 @@ LevelData::PosTrackXform LevelData::posTrackXformAt(int64_t floor) const {
         }
     }
     return x;
+}
+
+// DLC 长按的砖位偏移（权威 `Player.ts:1632`）：砖 i+1 **及其后所有砖**沿 exit 方向
+// 累计推 `holdDistance = (holdLen*2+1) × distanceMultiplier/100`。
+// 这既是"长按带能横跨空场"的来源，也是后面轨道不断开的前提。顺序在 PositionTrack 之前。
+void LevelData::applyHoldOffsets() {
+    if (m_tileHoldLength.empty()) return;
+    const int64_t n = (int64_t)tiles.size();
+    double hx = 0.0, hy = 0.0;
+    for (int64_t i = 1; i < n; ++i) {
+        const int holdLen = holdLengthAt(i - 1);
+        if (holdLen >= 0) {
+            const double dx = tiles[(size_t)i].position[0] - tiles[(size_t)(i - 1)].position[0];
+            const double dy = tiles[(size_t)i].position[1] - tiles[(size_t)(i - 1)].position[1];
+            const double len = std::sqrt(dx * dx + dy * dy);
+            if (len > 1e-5) {
+                const double d = (double)(holdLen * 2 + 1) * (double)holdMultAt(i - 1);
+                hx += dx / len * d;
+                hy += dy / len * d;
+            }
+        }
+        if (hx != 0.0 || hy != 0.0) {
+            tiles[(size_t)i].position[0] += hx;
+            tiles[(size_t)i].position[1] += hy;
+        }
+    }
 }
 
 void LevelData::applyRadiusScaleOffsets() {
