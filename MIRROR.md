@@ -475,6 +475,17 @@ relOffset / relType / posFlags`。
 **上游每加一个 `FastAction::Type`，导出的两个 switch（eventType 那个、payload 那个）都得跟**，
 而不能靠"7 类经典事件"的老假设。手搓用例里现在把 `MultiPlanet` 与 `Hold` 都钉住了。
 
+### 顺带：`-ffp-contract=off` 这条"跨平台逐位可比"的前提（2026-11-03）
+
+库的根 `CMakeLists.txt` 之前**漏了**这条，于是 `windows-default` 在 `adocao_window` 上红：
+「BPM 1612/9000 逐位不一致」。GCC 默认 `-ffp-contract=fast`、Clang 默认 `on` —— 两边把
+`a*b+c` 融成 FMA 的**时机不同**，同一份源码就差了 1 ULP。
+
+这条不是"性能开关"，而是**验收前提**：库里到处是"逐位对拍"（窗口重算、`.adocao`
+checkpoints、像素门槛），一旦不同平台/不同 TU 的舍入不一致，那些对拍就会变成"偶尔红"，
+而"偶尔红"最终会被当成噪音忽略。上游 2026-11-02 定案并已加进它的根 CMakeLists
+（`TODO.md` 里那条"`adocao_window` 在 Linux 偶发红"写的就是它，还标了同样的 1612/9000）。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

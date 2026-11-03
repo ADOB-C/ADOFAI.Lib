@@ -12,6 +12,15 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
 字段写，覆盖任意来源的 LevelData）。上游**不提供导出功能**：它自己那份同名能力是测试工具
 （先降级成 `adocao debug json`、2026-10-22 又从 `archive/` 挪进了 `tests/`），库不依赖它。
 
+## 一条构建铁律：`-ffp-contract=off`
+
+根 `CMakeLists.txt` 里对 `GNU|Clang` 加了 `add_compile_options(-ffp-contract=off)`。
+**别删**：GCC 默认 `fast`、Clang 默认 `on`，FMA 收缩的时机不同 → 同一份源码在不同平台算出差
+1 ULP 的 double，而库里到处是"逐位对拍"（窗口重算、`.adocao` checkpoints、像素门槛）。
+2026-11-03 的 `windows-default` 就是这么红的：`adocao_window` 报「BPM 1612/9000 逐位不一致」，
+macOS 绿、MinGW 红。上游 2026-11-02 已定案（它 `TODO.md` 里那条"Linux 偶发红"就是这个），
+库这边照抄。
+
 ## 三条硬规矩
 
 1. **`src/adofai/**` 一律不许手改。** 它是逐字节镜像，改了下次对齐就覆盖、而且两边静默漂移。

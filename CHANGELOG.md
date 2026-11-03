@@ -49,6 +49,12 @@ OFF 那侧是一条承诺：不 `find_package`、公共头里没有它的类型�
 * `std_includes` —— 库自有源码用了 `std::stable_sort` / `std::snprintf` / … 就必须直接 include
   对应的头（libc++ 会经别的头间接带进来，MinGW 直接报错，真踩过两次）。
 
+### 构建
+
+* **`-ffp-contract=off`（GCC/Clang）是必须的**：它保证跨平台/跨 TU 的浮点舍入一致，
+  库里所有"逐位对拍"（窗口重算、`.adocao` checkpoints、像素门槛）都建立在它之上。
+  删掉它会让 `windows-default` 出现「BPM 逐位不一致」这类假红。
+
 ### 已知限制
 
 * `ScaleRadius` 在**没有 v7 段**时不能写明文（建模层没留原始事件）；`packV7` 打包的容器可以；
