@@ -133,6 +133,7 @@ bool putAction(Writer& w, const LevelData& level, const T& a, std::string& err)
     case T::Pause:         w.String("Pause"); break;
     case T::AnimateTrack:  w.String("AnimateTrack"); break;
     case T::MultiPlanet:   w.String("MultiPlanet"); break;
+    case T::Hold:          w.String("Hold"); break;
     case T::Other:
         err = "内部错误：Other 类型的 action 不该出现在 LevelData.actions 里（解析期就丢了）";
         return false;
@@ -163,6 +164,30 @@ bool putAction(Writer& w, const LevelData& level, const T& a, std::string& err)
         // 粘性开关（2026-10-24 上游新增）：三态放在 `strId2` 里 —— 0=关、1=开、2=事件没写。
         // 只有"写过"才写回这个键（写了 false 也是"s 写过"），否则会把它变成显式默认而改变继承语义。
         if (a.strId2 != 2) { w.Key("stickToFloors"); w.Bool(a.strId2 == 1); }
+        // 四个富字段（2026-11-02 上游接上权威的 `getTileTransform`）：`posFlags` 位
+        // 1 rotation / 2 scale / 4 opacity / 8 relativeTo。**只有写过才写回** —— 写了默认值
+        // 会把"继承"变成"显式赋值"，语义就变了。
+        if (a.posFlags & 1) { w.Key("rotation"); if (!putF(w, a.posRotation, err, "PositionTrack.rotation")) return false; }
+        if (a.posFlags & 2) {
+            // 解析侧 `scale` 是"数字或 [x,y]，都 /100"；模型只留了一个分量，所以写回**数字**。
+            w.Key("scale");
+            const double sc = (double)a.posScale * 100.0;
+            if (!putNumber(w, sc, err, "PositionTrack.scale")) return false;
+        }
+        if (a.posFlags & 4) {
+            w.Key("opacity");
+            const double op = (double)a.posOpacity * 100.0;
+            if (!putNumber(w, op, err, "PositionTrack.opacity")) return false;
+        }
+        if (a.posFlags & 8) {
+            // PositionTrack 的 `relativeTo` 是**数组**形态 `[offset, "Start"|"End"|"0"|"1"|"2"]`
+            // （字符串形态是 MoveCamera 的，别混）。
+            w.Key("relativeTo");
+            w.StartArray();
+            w.Int((int)a.relOffset);
+            w.String(a.relType == 1 ? "Start" : a.relType == 2 ? "End" : "0");
+            w.EndArray();
+        }
         break;
     case T::SetHitsound:
         w.Key("hitsound"); w.String(str.c_str(), (rapidjson::SizeType)str.size());
@@ -174,6 +199,15 @@ bool putAction(Writer& w, const LevelData& level, const T& a, std::string& err)
     case T::MultiPlanet:
         // 星数（2..8）。解析侧接受 `"ThreePlanets"` / `"3"` / `3`，这里写数字最稳。
         w.Key("planets"); w.Int((int)a.val1);
+        break;
+    case T::Hold:
+        // DLC 长按（2026-11-03）：`duration` 直接当 holdLength（-1 = 事件没写 duration），
+        // `distanceMultiplier` 是百分数（模型里已 ÷100）。
+        if (a.val1 >= 0.0f) { w.Key("duration"); w.Int((int)a.val1); }
+        if (a.val2 != 1.0f) {
+            w.Key("distanceMultiplier");
+            if (!putNumber(w, (double)a.val2 * 100.0, err, "Hold.distanceMultiplier")) return false;
+        }
         break;
     case T::AnimateTrack:
         if (a.strId != 0) {
@@ -212,6 +246,7 @@ struct Digest {
         for (size_t i = 0; i < n; ++i) { h ^= q[i]; h *= 1099511628211ull; }
     }
     void u8(uint8_t v) { bytes(&v, 1); }
+    void i16(int16_t v) { int16_t t = v; bytes(&t, 2); }
     void u16(uint16_t v) { bytes(&v, 2); }   // `strId2` 的三态（PositionTrack 的粘性开关）
     void u32(uint32_t v) { bytes(&v, 4); }
     void i32(int32_t v) { bytes(&v, 4); }
@@ -636,6 +671,14 @@ uint64_t modelDigest(const LevelData& level)
         // 所以不能对所有类型都当字符串解 —— 越界下标会随池长度变化，指纹就飘了（f24 就是这么红的）。
         if (a.type == T::AnimateTrack) d.str(level.actionStr2(a));
         else d.u16(a.strId2);
+        // PositionTrack 的四个富字段（2026-11-02）：都是**输入**（上游把权威的
+        // rotation/scale/opacity/relativeTo 接上了），所以必须进指纹，否则 `.adocao`
+        // 存不下它们这件事会被"自检绿灯"掩盖。
+        if (a.type == T::PositionTrack) {
+            d.u8(a.posFlags);
+            d.f32(a.posRotation); d.f32(a.posScale); d.f32(a.posOpacity);
+            d.i16(a.relOffset); d.u8(a.relType);
+        }
         d.u8(a.flag ? 1 : 0);
         d.f32(a.val1);
         d.f32(a.val2);

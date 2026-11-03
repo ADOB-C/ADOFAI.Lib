@@ -437,6 +437,44 @@ PositionTrack 都没有时，旧实现会按 true 返回。
 那轮 9/10 个 job 是绿的，只有 `macOS-render-on` 单独被取消（runner 丢了）。看 job 明细，
 然后 `gh run rerun <id> --failed` 补跑那一个。我连着两轮把 cancelled 误读成"未验证"，是不对的。
 
+### 第十三次对齐（f61fbe2，16 个提交）：PositionTrack 的四个富字段，和容器的六列天花板
+
+上游把 PositionTrack 的 `rotation` / `scale` / `opacity` / `relativeTo` 接上了
+（权威的 `getTileTransform`，之前完全没做）。模型里新增 `posRotation / posScale / posOpacity /
+relOffset / relType / posFlags`。
+
+**由此暴露了一个结构性问题**：`.adocao` 的 `Actions` 段只有 **6 列**
+（floor / type / strId / flag / val1 / val2）+ 稀疏 `strId2`。这四列装不下，而
+**"重打包字节相同"这条自检抓不到** —— pack 与 unpack 两边一样地丢，字节照样相同。
+只有把它们加进 `modelDigest` 才会暴露（指纹的第三次实际价值：`songFilename`、`strId2`、这次）。
+
+处理方式是**明确拒绝**，而不是静默丢：
+
+* `.adofai` 导出：四个字段都写回（`scale`/`opacity` 按 ×100 归一化，`relativeTo` 写
+  PositionTrack 特有的**数组**形态 `[offset,"Start"]`，与 MoveCamera 的字符串形态区分）；
+* `.adocao` 导出：含这些字段且**没有原始切片**时**拒绝**，报错里给两条出路
+  （`preserveRawJson` + `Options::packV7`，或换 `.adofai`）；
+* `packV7` 不是万能钥匙：手搓的 `LevelData` 没有原始切片，v7 段是空的 → 照样拒绝。
+
+**同时修正了 v7 自检的判据**。原来写的是"建模指纹一致"，但那对 v7 路径是错的：
+`unpackLevel` 只从 6 列重建 `actions`，四列装不下的字段在建模结构里本来就是空的 ——
+它们**在 v7 段里原样存着**，这恰恰是写 v7 的意义。改成"v7 能无损回写，且**每一类**原始事件
+都还在"。
+
+最后这条判据也踩过一版：先写成"事件条数相等"，结果 f19 上 11 条原始切片只回写出 9 条
+（上游对 v7 做了去重）→ 改成**按类型集合**判，而不是按条数。
+
+### 同轮的 `Hold`（7f09695，2026-11-03）：又一个"掉进 default 就是坏 JSON"的类型
+
+对齐到 `f61fbe2` 之后 15 分钟，上游又提交了 DLC 长按 `Hold`（追加在 `Type` 末尾，避免
+`.adocao` v7 的类型编号串行）。它的数据落在 `val1`（duration → holdLength，-1 = 没写）与
+`val2`（distanceMultiplier ÷100），所以指纹**天然覆盖**（指纹对所有 action 都算 val1/val2）。
+
+但 `putAction` 的类型 switch 必须显式加一个 case —— 否则它会掉进 `default`，**连 `eventType`
+都不写**，产出坏 JSON。这已经是第二个这样的类型（上一个 `MultiPlanet`）。教训：
+**上游每加一个 `FastAction::Type`，导出的两个 switch（eventType 那个、payload 那个）都得跟**，
+而不能靠"7 类经典事件"的老假设。手搓用例里现在把 `MultiPlanet` 与 `Hold` 都钉住了。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

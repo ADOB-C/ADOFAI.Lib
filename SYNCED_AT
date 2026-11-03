@@ -5,9 +5,31 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=2896268
-ADOCAO_COMMIT_FULL=2896268de62c8daa0f9ad132d26ff7bf7a086f4b
-ADOCAO_COMMIT_DATE=2026-11-01
+ADOCAO_COMMIT=7f09695
+ADOCAO_COMMIT_FULL=7f0969548e2c47436d8b67d6bbc3af01377b4126
+ADOCAO_COMMIT_DATE=2026-11-03
+# 本次同步要点（17 个提交；243 个镜像文件逐字节一致）：
+#
+#  1. **PositionTrack 接上四个富字段**：rotation / scale / opacity / relativeTo（权威的
+#     getTileTransform，之前完全没做）。模型新增 posRotation/posScale/posOpacity/relOffset/
+#     relType/posFlags。
+#  2. **由此暴露容器的六列天花板**：`.adocao` 的 Actions 段只有 6 列，装不下这四列 ——
+#     而"重打包字节相同"这条自检抓不到（两边一样地丢）。只有把它们加进 modelDigest 才暴露。
+#     → `.adofai` 导出全部写回；`.adocao` 在"含这些字段且没有原始切片"时**明确拒绝**
+#     （出路：preserveRawJson + Options::packV7，或换 .adofai）。packV7 不是万能钥匙：
+#     手搓 LevelData 没有原始切片，v7 段是空的 → 照样拒绝。
+#  3. **v7 自检判据修正**：不能比建模指纹（unpackLevel 只从 6 列重建 actions，四列装不下的
+#     字段在建模结构里本来就是空的，但它们在 v7 段里原样存着）。改成"v7 能无损回写，且
+#     每一类原始事件都还在"。中间那版按**条数**判错了（f19：11 条切片 → 9 条事件，上游去重），
+#     已改成按**类型集合**判。
+#  4. **DLC 长按 `Hold`**（7f09695，对齐到 f61fbe2 之后 15 分钟又冒出来的）：追加在 Type 末尾
+#     （避免 .adocao v7 的类型编号串行），数据在 val1（duration→holdLength，-1=没写）与
+#     val2（distanceMultiplier ÷100）—— 指纹天然覆盖。但 putAction 的类型 switch 必须显式加
+#     case，否则掉进 default **连 eventType 都不写**（这是第二个这样的类型，上一个是 MultiPlanet）。
+#  5. 新用例 +2：position_xform / hold（都只链 core）。
+#
+# 上一次同步：2896268（渲染/动画的性能收割）。
+
 # 本次同步要点（10 个提交；241 个镜像文件逐字节一致）：
 #
 #  1. 渲染/动画性能收割：静止帧不再重传实例缓冲（2.55M 实例 194 MB/帧 → 0）、可见性改成事件式

@@ -110,23 +110,37 @@ bool verifyAdocao(const std::vector<uint8_t>& bytes, const LevelData& level, std
     }
     // **写了 v7 段时"重打包字节相同"这条判据不成立**：v7 段的内容来自 `rawActionSpans`
     // （pack 期捕获的原始 JSON 切片），而 `unpackLevel` 不会重建它们 —— 再打一次包就没有 v7
-    // 段了，字节必然变短。这时换成两条**更有针对性**的判据：
-    //   ① 建模指纹一致（unpack 丢了建模字段就会被抓到）；
-    //   ② v7 段真的能用：`writeV7Json` 能把它无损回写成 `.adofai`（这正是写 v7 的目的）。
+    // 段了，字节必然变短。也不能比建模指纹：`unpackLevel` 只从 v6 的 6 列重建 `actions`，
+    // 像 PositionTrack 的 rotation/scale/opacity 这种"6 列装不下的字段"在建模结构里本来就是空的
+    // —— 但它们**在 v7 段里原样存着**，这恰恰是写 v7 的意义。
+    // 所以判据是：v7 段能无损回写成 `.adofai`，且回写出的事件条数与原始切片条数一致。
     if (opts.withV7Events || opts.v7Only) {
-        if (modelDigest(back) != modelDigest(level)) {
-            err = "自检失败：写了 v7 段的 `.adocao` 往返后建模字段不一致";
-            return false;
-        }
         std::string json;
         std::string e1;
         if (!writeV7Json(back, json, e1)) {
             err = "自检失败：v7 事件段写进去了但回写不出来（" + e1 + "）";
             return false;
         }
-        if (json.find("eventType") == std::string::npos) {
-            err = "自检失败：v7 回写出来的明文里没有任何事件";
-            return false;
+        // 判据用**"每一类原始事件都还在"**而不是条数相等：条数会被上游的去重/过滤影响
+        // （实测 f19 的 11 条原始切片只回写出 9 条），但"某个 eventType 整体消失"才是真事故。
+        std::vector<std::string> wantTypes;
+        auto collect = [&](std::string_view raw) {
+            const size_t at = raw.find("\"eventType\"");
+            if (at == std::string_view::npos) return;
+            size_t q = raw.find('"', at + 11);
+            if (q == std::string_view::npos) return;
+            const size_t q2 = raw.find('"', q + 1);
+            if (q2 == std::string_view::npos) return;
+            wantTypes.emplace_back(raw.substr(q + 1, q2 - q - 1));
+        };
+        for (size_t i = 0; i < level.rawActionCount(); ++i) collect(level.rawAction(i));
+        // `rawDecorationsJson` 是**一整段** JSON（不是逐条的 vector），直接扫它。
+        collect(std::string_view(level.rawDecorationsJson));
+        for (const std::string& t : wantTypes) {
+            if (json.find("\"" + t + "\"") == std::string::npos) {
+                err = "自检失败：v7 段丢失了一整类事件（" + t + "）";
+                return false;
+            }
         }
         return true;
     }
@@ -245,6 +259,26 @@ bool writeTo(Format f, const LevelData& level, std::vector<uint8_t>& out, std::s
                   "存储（releaseAngleData）—— 改用 .adofai / .adofai.xz / .adofai.zst，"
                   "或者用没压缩过角度的那份再打 .adocao";
             return false;
+        }
+        // `.adocao` 的 `Actions` 段只有 6 列（floor/type/strId/flag/val1/val2）+ 稀疏 strId2，
+        // 装不下 PositionTrack 的 rotation / scale / opacity / relativeTo（2026-11-02 上游才接上
+        // 模型）。没开 `packV7` 时这些字段会被**静默丢掉** —— 而"重打包字节相同"这条自检抓不到
+        // （两边一样地丢）。所以这里先明确拒绝，并给出两条出路。
+        // `packV7` 只在**有原始切片**时才有用（`packLevel` 里 v7 段的内容来自它们）。
+        // 手搓的 LevelData 没有切片 → 开不开 v7 都存不下这四列，照样拒绝。
+        const bool canPreserveRaw = opt.packV7 && level.rawActionCount() > 0;
+        if (!canPreserveRaw) {
+            size_t lost = 0;
+            for (const auto& a : level.actions)
+                if (a.type == LevelData::FastAction::PositionTrack && (a.posFlags & 0x0Fu)) ++lost;
+            if (lost) {
+                err = std::to_string(lost) +
+                        " 条 PositionTrack 带 rotation / scale / opacity / relativeTo —— "
+                        "`.adocao` 的 Actions 段只有 6 列，装不下它们（会被静默丢掉）。"
+                        "出路：读谱时 `preserveRawJson = true` 且打包时 `Options::packV7 = true`"
+                        "（v7 事件段原样保存原始 JSON），或者用 `.adofai` 输出";
+                return false;
+            }
         }
         const adocao::PackOptions popts = toPackOptions(opt);
         if (!adocao::packLevel(level, out, err, nullptr, popts)) {

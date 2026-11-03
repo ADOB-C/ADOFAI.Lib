@@ -171,6 +171,19 @@ u16 planetEase │ u16 trackDisappearAnimation │ u16 trackAnimation │ f32 be
 * 另外注意**只写输入**：事件的 `floor/type/strId/flag/val1/val2` 就够了；
   **砖的位置 / 朝向 / 每层 BPM / 时间线都是派生的**，一律**不要**写进文件（它们由读取方重算）。
 
+### 3.2b ⚠️ `actions` 只有 6 列 —— 有些字段**装不进 `.adocao`**
+
+`Actions` 段每层只有 `floor / type / strId / flag / val1 / val2`（+ 稀疏 `strId2`）。
+2026-11-02 起 `PositionTrack` 在模型里有四个**富字段**（`rotation` / `scale` / `opacity` /
+`relativeTo`），它们**没有列**可放，于是：
+
+* 写 `.adocao` 时这四列会**静默丢** —— 而"重打包字节相同"这条自检**抓不到**（pack 与 unpack
+  一样地丢，字节照样相同）。库里的做法是**明确拒绝**，逼你选一条出路；
+* 出路只有两条：① 让 `v7` 事件段把**原始 JSON** 原样存下来（库里的
+  `preserveRawJson = true` + `Options::packV7 = true`）；② 输出 `.adofai`（那四列都能写）。
+
+判断"装不装得下"要按**事件类型**看，不是按列数 —— 加新字段时先问一句"哪一列放它"。
+
 ### 3.3 段级压缩
 
 * 对每个段：**≥ 256 B** 才值得压；用 zstd（建议 level 19）压一次，

@@ -296,6 +296,16 @@ add_executable(adofai_sticky_track_test sticky_track_test.cpp)
 target_link_libraries(adofai_sticky_track_test PRIVATE ADOFAI::core)
 add_test(NAME sticky_track COMMAND adofai_sticky_track_test)
 
+# 2026-11-03：DLC 长按（Hold）
+add_executable(adofai_hold_test hold_test.cpp)
+target_link_libraries(adofai_hold_test PRIVATE ADOFAI::core)
+add_test(NAME hold COMMAND adofai_hold_test)
+
+# 2026-11-02：PositionTrack 的四个富字段（rotation / scale / opacity / relativeTo）
+add_executable(adofai_position_xform_test position_xform_test.cpp)
+target_link_libraries(adofai_position_xform_test PRIVATE ADOFAI::core)
+add_test(NAME position_xform COMMAND adofai_position_xform_test)
+
 # 2026-11-01：TileAnimation 的"活跃砖"扫描（事件式可见性）
 add_executable(adofai_tileanim_active_test tileanim_active_test.cpp)
 target_link_libraries(adofai_tileanim_active_test PRIVATE ADOFAI::core)

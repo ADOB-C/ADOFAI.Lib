@@ -1,4 +1,6 @@
 #include "core/timeline/TileAnimation.hpp"
+
+#include <chrono>
 #include <cstdio>
 
 #include <algorithm>
@@ -81,6 +83,13 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
     // （2026-10-21 我先误判成"动画晚 shift 秒"，后来用 harness 以本仓库网格复算才确认：
     //  它的 sample(t) 与我们的 chart 时间一一对应。）
     const double animShift = 0.0;
+    // 分段计时（`ADOCAO_PROFILE=1`）：拆分"建帧 700 ms"到底花在哪一段。
+    const bool prof = std::getenv("ADOCAO_PROFILE") != nullptr;
+    const auto tStart = std::chrono::steady_clock::now();
+    auto msSince = [](auto a) {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a).count();
+    };
+    auto tMark = tStart;
 
     // ---- 1) MoveTrack：逐砖建 tween（**先**建，之后被 AnimateTrack 覆盖） ----
     const auto& moves = lv.moveEvents();
@@ -147,7 +156,14 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
         const auto& dT = tl.animDisappearType();
         const auto& dS = tl.animDisappearStart();
         const auto& dE = tl.animDisappearEnd();
+        if (prof) { LOG_I("anim-prof: MoveTrack 建帧 %.1f ms", msSince(tMark)); tMark = std::chrono::steady_clock::now(); }
         const size_t n = aT.size();
+        // **关键帧预算**：`kMaxKeyframes` 以前只在最后打一条 LOG_W（名不副实 —— 名字像护栏，
+        // 实际是注释：真超了照样把内存吃到爆）。现在这里维护运行总数，超了就**停止建新帧**
+        // 并标 truncated（已建的那些照常工作）。每块砖的增量是 O(1)（6 条通道的 size）。
+        size_t kfTotal = keyframeCount();
+        const size_t kfBudget = maxKeyframesT();
+        bool kfStop = false;
         // appear 动画要求"淡入之前这块砖根本不存在"，而下面那段通用的 t=0 基准帧
         // （见「补齐 t=0 的基准帧」）会把透明度补成 1 —— 两者冲突时以 appear 自身为准：
         // 参考实现每个 case 的第一句都是 `addKeyframe(entity, <通道>, 0, <初始状态>, null)`
@@ -163,6 +179,8 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
                 rStart = std::min(rStart, dS[i] + animShift); rEnd = std::max(rEnd, dE[i] + animShift);
             }
             TileKeyframes& fr = ensureFrame(tile, rStart, rEnd + TileKeyframes::rangeGrace());
+            const size_t kfBefore = fr.posX.size() + fr.posY.size() + fr.rot.size() +
+                                    fr.scaleX.size() + fr.scaleY.size() + fr.opacity.size();
             fr.rangeStart = std::min(fr.rangeStart, rStart);
             fr.rangeEnd = std::max(fr.rangeEnd, rEnd + TileKeyframes::rangeGrace());
             if (at) appearPins.emplace_back((size_t)(&fr - m_frames.data()), at, tile);
@@ -232,6 +250,21 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
                         fr.rot.addTween(t0, t1, 0.0f, -3.14159265f, Ease::OutSine, 0.0f);
                         break;
                     default: break;
+                }
+            }
+            // **关键帧预算**：增量记账（别在循环里调 keyframeCount()，那是 O(帧数) → O(n²)）。
+            // 以前 `kMaxKeyframes` 只在最后打一条 LOG_W —— 名字像护栏、实际是注释：
+            // 真超了照样把内存吃到爆。现在超了就停止建新帧并标 truncated。
+            if (!kfStop) {
+                kfTotal += (fr.posX.size() + fr.posY.size() + fr.rot.size() + fr.scaleX.size() +
+                            fr.scaleY.size() + fr.opacity.size()) - kfBefore;
+                if (kfTotal > kfBudget) {
+                    kfStop = true;
+                    m_truncated = true;
+                    LOG_W("TileAnimation: 关键帧总数 %zu 超过预算 %zu → 从第 %lld 砖起停止建帧"
+                          "（后面那些砖保持基准状态；ADOCAO_TUNE=maxKeyframes=… 可调）",
+                          kfTotal, kfBudget, (long long)tile);
+                    break;
                 }
             }
         }
@@ -328,7 +361,10 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
         }
     }
 
+    if (prof) { LOG_I("anim-prof: AnimateTrack 建帧 %.1f ms", msSince(tMark)); tMark = std::chrono::steady_clock::now(); }
     buildFlipEvents();
+    if (prof) { LOG_I("anim-prof: buildFlipEvents %.1f ms（事件 %zu 条）", msSince(tMark),
+                      m_flipT.size()); }
 
     // 诊断：`ADOCAO_ANIM_DUMP_TILE=<n>` 打印该砖各通道的关键帧（排查"砖为什么看不见"）
     if (const char* dt = std::getenv("ADOCAO_ANIM_DUMP_TILE")) {
@@ -365,9 +401,11 @@ void TileAnimation::build(const LevelData& lv, const Timeline& tl) {
             LOG_I("anim-dump tile=%lld 没有动画帧", (long long)want);
         }
     }
-    if (keyframeCount() > maxKeyframesT()) {
+    if (!m_truncated && keyframeCount() > maxKeyframesT()) {
+        // AnimateTrack 那段没刹过车（`!m_truncated`），说明超预算的是 **MoveTrack** 段建出来的帧。
         m_truncated = true;
-        LOG_W("TileAnimation: 关键帧总数 %zu 超过上限 %zu", keyframeCount(), maxKeyframesT());
+        LOG_W("TileAnimation: 关键帧总数 %zu 超过预算 %zu（MoveTrack 段产生）", keyframeCount(),
+              maxKeyframesT());
     }
     LOG_I("TileAnimation: %zu 砖有动画，%zu 条关键帧（%.1f KB，截断=%d）",
           m_index.size(), keyframeCount(),

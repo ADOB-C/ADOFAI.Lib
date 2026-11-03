@@ -502,12 +502,21 @@ int main(int argc, char** argv)
         size_t i0 = add(LevelData::FastAction::PositionTrack, 1);
         lv.actions[i0].val1 = 1.5f; lv.actions[i0].val2 = -2.5f;
         lv.actions[i0].flag = false; lv.actions[i0].strId2 = 1;   // stick = 开
+        // 2026-11-02 上游接上的四个富字段（权威的 getTileTransform）：全写一遍
+        lv.actions[i0].posFlags = 1u | 2u | 4u | 8u;
+        lv.actions[i0].posRotation = 45.0f;
+        lv.actions[i0].posScale = 1.2f;      // 已 /100
+        lv.actions[i0].posOpacity = 0.8f;    // 已 /100
+        lv.actions[i0].relOffset = 2; lv.actions[i0].relType = 1;   // Start+2
         size_t i1 = add(LevelData::FastAction::PositionTrack, 2);
         lv.actions[i1].strId2 = 0;                                // stick = 关
         size_t i2 = add(LevelData::FastAction::PositionTrack, 3);
         lv.actions[i2].strId2 = 2;                                // 事件没写（继承）
         size_t i3 = add(LevelData::FastAction::MultiPlanet, 4);
         lv.actions[i3].val1 = 3.0f;                               // 三颗星
+        size_t i4 = add(LevelData::FastAction::Hold, 5);           // DLC 长按（2026-11-03）
+        lv.actions[i4].val1 = 4.0f;                                // duration → holdLength
+        lv.actions[i4].val2 = 0.5f;                                // distanceMultiplier 50%
 
         const uint64_t want = exporter::modelDigest(lv);
         const std::string p = outDir + "/new_fields.adofai";
@@ -522,6 +531,7 @@ int main(int argc, char** argv)
                 fail("新字段（stick / MultiPlanet）", "往返后建模字段不一致（stick 或 planets 丢了）");
             } else {
                 bool sawStickOn = false, sawStickOff = false, sawStickAbsent = true, sawPlanets = false;
+                bool sawHold = false;
                 for (const auto& a : back.actions) {
                     if (a.type == LevelData::FastAction::PositionTrack) {
                         if (a.strId2 == 1) sawStickOn = true;
@@ -529,13 +539,99 @@ int main(int argc, char** argv)
                         else if (a.strId2 != 2) sawStickAbsent = false;
                     }
                     if (a.type == LevelData::FastAction::MultiPlanet && (int)a.val1 == 3) sawPlanets = true;
+                    if (a.type == LevelData::FastAction::Hold && (int)a.val1 == 4 && a.val2 == 0.5f)
+                        sawHold = true;
                 }
-                if (!sawStickOn || !sawStickOff || !sawStickAbsent || !sawPlanets)
-                    fail("新字段（stick / MultiPlanet）", "三态或星数没原样回来");
+                if (!sawStickOn || !sawStickOff || !sawStickAbsent || !sawPlanets || !sawHold)
+                    fail("新字段（stick / MultiPlanet / Hold）", "三态、星数或长按没原样回来");
                 else
-                    std::printf("OK    stickToFloors 三态 + MultiPlanet 星数（手搓 LevelData 往返）\n");
+                    std::printf("OK    stickToFloors 三态 + MultiPlanet 星数 + Hold 长按（手搓往返）\n");
+
+                // PositionTrack 的四个富字段也要在明文里原样（指纹已经把它们算进去了，
+                // 这里再钉一下**键名**，不然"指纹一致但键写成别的名字"也会漏过）。
+                const std::vector<char> j = readRawFile(p);
+                const std::string jt(j.begin(), j.end());
+                const bool keysOk = jt.find("\"rotation\"") != std::string::npos &&
+                                    jt.find("\"scale\"") != std::string::npos &&
+                                    jt.find("\"opacity\"") != std::string::npos &&
+                                    jt.find("\"relativeTo\":[2,\"Start\"]") != std::string::npos;
+                if (!keysOk)
+                    fail("PositionTrack 富字段", "写出的键名/形态不对（rotation/scale/opacity/relativeTo）");
+                else
+                    std::printf("OK    PositionTrack rotation/scale/opacity/relativeTo 写回明文\n");
             }
         }
+
+#ifdef ADOFAI_EXPORT_TEST_HAVE_ARCHIVE
+        // `.adocao` 装不下这四个字段（Actions 段只有 6 列）→ **必须明确拒绝**，不能静默丢。
+        {
+            std::string e;
+            if (exporter::exportLevel(lv, exporter::Format::Adocao, outDir + "/new_fields.adocao", e)) {
+                fail("PositionTrack 富字段", "`.adocao` 居然接受了 —— 这些字段会被静默丢掉");
+            } else if (e.find("PositionTrack") == std::string::npos) {
+                fail("PositionTrack 富字段", "拒绝的理由没提 PositionTrack：" + e);
+            } else {
+                std::printf("OK    `.adocao` 明确拒绝装不下的 PositionTrack 富字段（不静默丢）\n");
+            }
+            // 手搓的 LevelData **没有原始切片**，所以开 packV7 也救不了 —— 仍然必须拒绝。
+            exporter::Options o7;
+            o7.packV7 = true;
+            if (exporter::exportLevel(lv, exporter::Format::Adocao, outDir + "/nf_v7.adocao", e, o7))
+                fail("PositionTrack 富字段", "手搓 LevelData 开 packV7 也接受了（没有原始切片，v7 是空的）");
+            else
+                std::printf("OK    没有原始切片时 packV7 也拒绝（不是万能钥匙）\n");
+        }
+
+        // 真正的出路：**解析进来的**谱（有原始切片）→ `packV7` → 无损
+        {
+            const std::string src = outDir + "/pt_rich.adofai";
+            const std::string js = R"({"settings":{"bpm":120},"angleData":[0,90,180,270,0,90,180,270],
+ "actions":[{"floor":2,"eventType":"PositionTrack","positionOffset":[1,2],
+ "rotation":45,"scale":120,"opacity":80,"relativeTo":[2,"Start"]}]})";
+            LevelData lv2;
+            lv2.preserveRawJson = true;               // ← 关键：留原始切片，v7 才有东西可存
+            std::string e2;
+            if (!writeRawFile(src, js.data(), js.size()) || !lv2.loadFromFile(src)) {
+                fail("PositionTrack 富字段（真实链路）", "临时谱读写失败");
+            } else {
+                bool anyFlags = false;
+                for (const auto& a : lv2.actions)
+                    if (a.type == LevelData::FastAction::PositionTrack && a.posFlags) anyFlags = true;
+                if (!anyFlags) {
+                    fail("PositionTrack 富字段（真实链路）", "解析后 posFlags 还是 0（模型没接上？）");
+                } else {
+                    exporter::Options o7;
+                    o7.packV7 = true;
+                    const std::string cont = outDir + "/pt_rich.adocao";
+                    if (!exporter::exportLevel(lv2, exporter::Format::Adocao, cont, e2, o7)) {
+                        fail("PositionTrack 富字段（真实链路）", "packV7 打包失败：" + e2);
+                    } else {
+                        LevelData back;
+                        const std::string out2 = outDir + "/pt_rich_back.adofai";
+                        if (!back.loadFromFile(cont) || back.v7SchemaBytes.empty()) {
+                            fail("PositionTrack 富字段（真实链路）", "v7 容器读回来没有 v7 段");
+                        } else if (!exporter::exportLevel(back, exporter::Format::Adofai, out2, e2)) {
+                            fail("PositionTrack 富字段（真实链路）", "无损回写失败：" + e2);
+                        } else {
+                            const std::vector<char> g = readRawFile(out2);
+                            const std::string gt(g.begin(), g.end());
+                            // 只钉**键名**（原样回写的 JSON 会重排空格、`2` 可能成 `2.0`，
+                            // 逐字比对太脆）；数值由上面"手搓 LevelData"那段逐位钉住。
+                            if (gt.find("\"rotation\"") == std::string::npos ||
+                                gt.find("\"scale\"") == std::string::npos ||
+                                gt.find("\"opacity\"") == std::string::npos ||
+                                gt.find("\"relativeTo\"") == std::string::npos ||
+                                gt.find("\"Start\"") == std::string::npos)
+                                fail("PositionTrack 富字段（真实链路）", "回写的明文里四个字段不全");
+                            else
+                                std::printf("OK    解析 → packV7 → 无损回写：rotation/scale/opacity/"
+                                            "relativeTo 全保留\n");
+                        }
+                    }
+                }
+            }
+        }
+#endif
     }
 
     // ── 角度紧凑存储（上游 2026-10 加的 `releaseAngleData`）──────────────────
