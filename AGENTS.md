@@ -87,9 +87,15 @@ export 是**库自有**的，分两层：有 v7 事件段时走 `exporter::write
    XDG_CACHE_HOME=/tmp/gh-cache gh run view <id>
    XDG_CACHE_HOME=/tmp/gh-cache gh run view <id> --log | grep -E "FAIL|tests passed"
    ```
-   **看到 `conclusion=cancelled` 别急着当成"没验过"**：看 job 明细。2026-10-31 那轮 9/10 绿，
-  只有 `macOS-render-on` 单独被取消（runner 丢了），整轮结论才成了 cancelled —— 用
-  `gh run rerun <id> --failed` 补跑那一个 job 即可。
+   **看到 `conclusion=cancelled` 别急着当成"没验过"，也别猜配额**：先看 job 明细的三个字段 ——
+  `runner_name` / `steps` / `started_at→completed_at`。
+  * **空 runner + 0 steps + 1 秒** = **根本没拿到 runner**（供给问题），不是我们的配置/代码；
+  * 有 runner、跑了几步才取消 = 才是真被中断。
+  2026-10 的实例：`macOS-render-on` 连续三轮这样，根因是 **`macos-14` 退休**（公告 2026-10-01，
+  退休 2026-11-02；之前有多轮 brownout 并**降低容量**，我们正好撞在窗口里）。已换成
+  `macos-15`（arm64、公开仓库免费；**故意不用 `macos-latest`** —— 它现在指向 `macos-26`，
+  Xcode 跟着漂会让像素/几何结论不可复现）。
+  ⚠️ 另外：`private=false` 的公开仓库 **Actions 分钟数不限**，别一看到取消就往额度上想。
   另外：只改 `**.md` / `SYNCED_AT` / `LICENSE` / `NOTICE` 的提交**压根不会触发 CI**
    （workflow 里的 `paths-ignore`）—— 那种推完既没有 run 也没有邮件，不用去找。
 

@@ -284,7 +284,14 @@ jobs:
     # **只有在这儿才可能真跑** —— Ubuntu runner 上 glfwInit 会失败并打印 SKIP
     # （见 linux 的 "Report whether the GPU bitwise layer actually ran" 那一步）。
     name: macOS-render-on
-    runs-on: macos-14
+    # ⚠️ `macos-14` **2026-11-02 已退休**（GitHub 公告 2026-10-01）。退休前它先经历了
+    # 多轮 brownout（10-05/12/16/19/23/26/29/30 各 14:00→次日 00:00 UTC）并**降低容量**——
+    # 我们正好撞上：10-30 20:10Z 那次在 brownout 窗口里，10-31 与 11-01 两次在收缩期，
+    # 表现是「job 被标记 started 后 1 秒取消、`runner_name` 为空、`steps=0`」= **根本没拿到 runner**，
+    # 不是我们的配置或代码问题。
+    # 换成 `macos-15`（仍是 arm64，公开仓库免费）；`macos-latest` 现在指向 `macos-26`，
+    # 这里**故意不用 latest** —— Xcode 大版本跟着 latest 漂会让像素/几何那层结论不可复现。
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
