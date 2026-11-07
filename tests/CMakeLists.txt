@@ -296,6 +296,11 @@ add_executable(adofai_sticky_track_test sticky_track_test.cpp)
 target_link_libraries(adofai_sticky_track_test PRIVATE ADOFAI::core)
 add_test(NAME sticky_track COMMAND adofai_sticky_track_test)
 
+# 2026-11-07：拖尾采样点必须与 positionAtTile 逐位一致（长按滑动圆心那类 bug 的护栏）
+add_executable(adofai_trail_parity_test trail_parity_test.cpp)
+target_link_libraries(adofai_trail_parity_test PRIVATE ADOFAI::core)
+add_test(NAME trail_parity COMMAND adofai_trail_parity_test)
+
 # 2026-11-03：DLC 长按（Hold）
 add_executable(adofai_hold_test hold_test.cpp)
 target_link_libraries(adofai_hold_test PRIVATE ADOFAI::core)

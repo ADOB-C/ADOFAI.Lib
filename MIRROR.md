@@ -486,6 +486,19 @@ checkpoints、像素门槛），一旦不同平台/不同 TU 的舍入不一致�
 而"偶尔红"最终会被当成噪音忽略。上游 2026-11-02 定案并已加进它的根 CMakeLists
 （`TODO.md` 里那条"`adocao_window` 在 Linux 偶发红"写的就是它，还标了同样的 1612/9000）。
 
+### 第十四次对齐（6c28a2e，15 个提交）：拖尾与长按滑动圆心
+
+镜像区只动了 `core/timeline/PositionSolver.{hpp,cpp}` —— 其余 13 笔全在 `app/`（拖尾的
+快路径/慢路径开关、`ADOCAO_TRAIL_CHECK` 自检、`ADOCAO_TRAIL_TRACE`、build.sh 的资产包遮蔽问题）。
+
+值得记的是**这一串 bug 的形状**：同一个"拖尾画成直线"的症状，被拆成了四层去查 ——
+①采样点塌成一点时不画（`021a4f4`，随后被 `88161df` Revert，因为它掩盖了真因）；
+②复用常量里 `slideX/slideY` 跨砖没清零（`f1d7601`）；③`positionAtTile` 漏了长按滑动圆心
+（`6c28a2e`）；④采样对但画出来是直条（`2101edd` 只记线索不猜）。
+
+新增 `trail_parity_test`（只链 core）：**每个采样点与 `positionAtTile` 逐位比较**。
+这类"看起来是一条线"的渲染 bug，靠像素比对是后知后觉，靠"采样值与权威函数逐位相同"才是前置护栏。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——

@@ -59,6 +59,26 @@ static void livePivot(const LevelData& L, const TileAnimation* anim, int64_t idx
     y += xf.moveY;
 }
 
+// **长按滑动圆心**（权威 `Player.ts:7213`）：圆心从砖心**线性平移**到
+// `tail位置 − rTail·dir(exitDir)`，`exitDir = startAngle + totalAngle` 是**固定**的出口角
+// （不是当前角）。
+//
+// **这一份必须被 positionAt 与 positionAtTile 共用** —— 两处各写一份时漏了一处，
+// 实测 Fledgling t=255：实时行星已经滑到 -24.99，而拖尾采样还在砖上 -54.99，
+// 拖尾末点（head，走 positionAt）与倒数第二个采样差 **30 单位** → 屏幕上一条横贯的直条。
+static void applyHoldSlide(const LevelData& L, const Timeline& timeline, int tileIdx,
+                           double progress, double& cx, double& cy) {
+    if (L.holdLengthAt(tileIdx) < 0 || tileIdx + 1 >= L.tileCount()) return;
+    const double exitDir = (double)timeline.startAngleAt(tileIdx)
+                         + (double)timeline.totalAngleAt(tileIdx);
+    const auto tail = L.tilePositionAt(tileIdx + 1);
+    const double rTail = (double)L.radiusScaleAt(tileIdx + 1);
+    const double endCX = (double)tail[0] - std::cos(exitDir) * rTail;
+    const double endCY = (double)tail[1] - std::sin(exitDir) * rTail;
+    cx += (endCX - cx) * progress;
+    cy += (endCY - cy) * progress;
+}
+
 
 void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& redOut,
                                 glm::dvec2& blueOut, const TileAnimation* anim) {
@@ -131,19 +151,10 @@ void PositionSolver::positionAt(const Timeline& timeline, double t, glm::dvec2& 
     if (progress<0) progress=0; if (progress>1) progress=1;
     double angle = (double)timeline.startAngleAt(tileIdx)+(double)timeline.totalAngleAt(tileIdx)*progress;
     double dist = orbitRadiusAt(L, tileIdx, progress);
-    // **长按**：权威 `Player.ts:7213` —— 圆心从砖心**线性平移**到 `tail位置 − rTail·dir(exitDir)`，
-    // 其中 `exitDir = startAngle + totalAngle` 是**固定**的出口角（不是当前角）。
+    // 长按滑动圆心（细节见 applyHoldSlide）
     // 行星/拖尾/相机都跟着这个滑动圆心走（相机跟行星，所以改这里一处就够）。
     double cx = pivotPos[0], cy = pivotPos[1];
-    if (L.holdLengthAt(tileIdx) >= 0 && tileIdx + 1 < L.tileCount()) {
-        const double exitDir = (double)timeline.startAngleAt(tileIdx) + (double)timeline.totalAngleAt(tileIdx);
-        const auto tail = L.tilePositionAt(tileIdx + 1);
-        const double rTail = (double)L.radiusScaleAt(tileIdx + 1);
-        const double endCX = (double)tail[0] - std::cos(exitDir) * rTail;
-        const double endCY = (double)tail[1] - std::sin(exitDir) * rTail;
-        cx += (endCX - cx) * progress;
-        cy += (endCY - cy) * progress;
-    }
+    applyHoldSlide(L, timeline, tileIdx, progress, cx, cy);
     glm::dvec2 pv(cx, cy);
     glm::dvec2 mv(cx+std::cos(angle)*dist, cy+std::sin(angle)*dist);
     if (isRed) { redOut=pv; blueOut=mv; }
@@ -277,8 +288,11 @@ void PositionSolver::positionAtTile(const Timeline& timeline, double t, int tile
     if (progress<0) progress=0; if (progress>1) progress=1;
     double angle = (double)timeline.startAngleAt(tileIdx)+(double)timeline.totalAngleAt(tileIdx)*progress;
     double dist = orbitRadiusAt(L, tileIdx, progress);
-    glm::dvec2 pv(pivotPos[0],pivotPos[1]);
-    glm::dvec2 mv(pivotPos[0]+std::cos(angle)*dist, pivotPos[1]+std::sin(angle)*dist);
+    // 长按滑动圆心：与 positionAt 同一个助手（见那里的说明 —— 少这一处就会差出整个 holdDistance）
+    double cx = pivotPos[0], cy = pivotPos[1];
+    applyHoldSlide(L, timeline, tileIdx, progress, cx, cy);
+    glm::dvec2 pv(cx, cy);
+    glm::dvec2 mv(cx+std::cos(angle)*dist, cy+std::sin(angle)*dist);
     if (isRed) { redOut=pv; blueOut=mv; }
     else       { blueOut=pv; redOut=mv; }
 }
@@ -436,6 +450,12 @@ inline void loadTrailTileConsts(const Timeline& timeline, int tileIdx, int n, do
     // **长按**：拖尾也必须用"滑动圆心"，否则行星在转圈、拖尾却沿轨道走 —— 看起来就是
     // 一条水平的直线（用户报的"拖尾是水平的"）。
     c.hasSlide = (L.holdLengthAt(tileIdx) >= 0) && (tileIdx + 1 < (int)L.tileCount());
+    // **必须清零**：`TrailTileConsts c` 在采样循环里是**复用**的，而 slide 只在长按砖里被
+    // `loadTrailTileConstsLive` 写入。不清零的话，离开长按砖后 `slide` 还残留上一砖的 40 单位，
+    // `trailPointAt` 会把圆心按 progress 平移出去 —— 实测半径算出 9.25（应为 1），
+    // 拖尾在砖边界拉出一条长线（用户："这里飞了 50 个单位"）。
+    c.slideX = 0.0;
+    c.slideY = 0.0;
     c.isRed = (tileIdx % 2 == 0);
     c.firstStart = timeline.firstStartTime();
     // 与 `positionAtTile` 的分支判据一致：n < 2 或首砖之前走特例；末尾合成砖（>= n-1）也走特例。
@@ -517,6 +537,7 @@ void PositionSolver::sampleTrailRange(const Timeline& timeline, double startTime
         return denseStarts ? startArr[idx] : timeline.startTimeAt(idx);
     };
 
+
     TrailTileConsts c;
     int cTile = -1;              // c 对应的砖号（-1 = 还没有；推进后置 -1 变懒加载）
     double tileStart = startTimeOf(tileIdx);
@@ -548,20 +569,63 @@ void PositionSolver::sampleTrailRange(const Timeline& timeline, double startTime
                   (double)L.tileDirectionAt((int64_t)tileIdx - 1));
         }
         double rx = 0.0, ry = 0.0, bx = 0.0, by = 0.0;
-        // **拖尾 = 行星轨迹**，所以采样点必须由**算行星位置的同一个函数**给出。
-        // 原来这里走 `trailPointAt`（一份"缓存副本"），为它已经踩过两次坑：
-        //   ① 长按期间圆心在平移，副本不知道 → 拖尾是水平直线；
-        //   ② 补了 slide 之后，到达瞬间缓存常量与活值错位 → 拖尾被拉成跨屏横带。
-        // 现在一律调 `positionAtTile`（与行星逐位相同），慢一点换来"不可能分家"。
-        if (c.tileMain && tt >= c.firstStart) {
-            // 特例（首砖之前 / 末尾合成砖）：照原样调 positionAtTile，语义与逐位都不动。
+        // **拖尾 = 行星轨迹**：普通砖走快路径（`trailPointAt`，与 `positionAtTile` 逐位相同，
+        // 由 `tests/trail_parity_test` 钉住）；**长按砖直接调 `positionAtTile`** ——
+        // 那块砖圆心在平移，快路径的缓存式与它分家过两次（水平直线 / 到达瞬间横带）。
+        // `ADOCAO_TRAIL_SLOW=1` 可强制全部走 `positionAtTile`（诊断对比用）。
+        static const bool kTrailSlow = env::flag("ADOCAO_TRAIL_SLOW");
+        static const bool kTrailFast = env::flag("ADOCAO_TRAIL_FAST");   // 诊断：长按砖也走快路径
+        const bool isHoldTile = timeline.level()->holdLengthAt(tileIdx) >= 0;
+        if (!kTrailSlow && c.tileMain && tt >= c.firstStart && (!isHoldTile || kTrailFast)) {
+            trailPointAt(c, tt, rx, ry, bx, by);
+        } else {
+            // 特例（首砖之前 / 末尾合成砖 / 长按 / 慢路径）：照原样调 positionAtTile。
             glm::dvec2 r(0), b(0);
             positionAtTile(timeline, tt, tileIdx, r, b, anim);
             rx = r.x; ry = r.y; bx = b.x; by = b.y;
         }
+        // 自检：`ADOCAO_TRAIL_CHECK=1` 时，**每个采样点**都用 `positionAtTile` 复算一遍并逐位比较，
+        // 结束时打一行"比了多少点、差了多少点"。这是对"快路径 == positionAtTile"的现场取证
+        // （对拍测试只覆盖每块砖 5 个时刻，这里覆盖**真实拖尾窗口里的每一个点**）。
+        static const bool kTrailCheck = env::flag("ADOCAO_TRAIL_CHECK");
+        if (kTrailCheck) {
+            glm::dvec2 r2(0), b2(0);
+            positionAtTile(timeline, tt, tileIdx, r2, b2, anim);
+            static long sChecked = 0, sDiff = 0;
+            ++sChecked;
+            if (std::memcmp(&r2.x, &rx, sizeof(double)) != 0 ||
+                std::memcmp(&r2.y, &ry, sizeof(double)) != 0 ||
+                std::memcmp(&b2.x, &bx, sizeof(double)) != 0 ||
+                std::memcmp(&b2.y, &by, sizeof(double)) != 0) {
+                if (sDiff < 5)
+                    LOG_W("trail-check: tt=%.6f idx=%d 快路径=(%.17g,%.17g|%.17g,%.17g) "
+                          "positionAtTile=(%.17g,%.17g|%.17g,%.17g)", tt, tileIdx, rx, ry, bx, by,
+                          r2.x, r2.y, b2.x, b2.y);
+                ++sDiff;
+            }
+            if (i + 1 == maxSamples || tt + dt > t)
+                LOG_I("trail-check: 共比 %ld 点，差异 %ld 点", sChecked, sDiff);
+        }
         redOut[base + samples]  = glm::dvec2(rx, ry);
         blueOut[base + samples] = glm::dvec2(bx, by);
         samples++;
+    }
+    // 守卫（`ADOCAO_TRAIL_CHECK`）：head 是**实时行星位置**（`positionAt` 求），采样是
+    // `positionAtTile` 求 —— 两者在同一个 t 上必须**同一个数**，否则拖尾末点会甩出一条直线。
+    // 2026-11-07 真踩过：`positionAtTile` 漏了长按滑动圆心，Fledgling t=255 差 30 单位
+    // （整条 holdDistance 摊在拖尾最后一段上，屏幕上是一条横贯全屏的直条）。
+    if (env::flag("ADOCAO_TRAIL_CHECK")) {
+        glm::dvec2 rT{}, bT{};
+        PositionSolver::positionAtTile(timeline, t, timeline.findTileIndex(t), rT, bT, anim);
+        const double dr = std::hypot(rT.x - redHead.x, rT.y - redHead.y);
+        const double db = std::hypot(bT.x - blueHead.x, bT.y - blueHead.y);
+        if (dr > 1e-9 || db > 1e-9)
+            LOG_E("trail-head: positionAt 与 positionAtTile 不一致 t=%.4f red=%.6f blue=%.6f "
+                  "head=(%.6f,%.6f)/(%.6f,%.6f) tile=(%.6f,%.6f)/(%.6f,%.6f)",
+                  t, dr, db, redHead.x, redHead.y, blueHead.x, blueHead.y, rT.x, rT.y, bT.x, bT.y);
+        else if (env::flag("ADOCAO_TRAIL_TRACE"))
+            LOG_I("trail-head: t=%.4f 两求值器一致 red=(%.4f,%.4f) blue=(%.4f,%.4f)",
+                  t, redHead.x, redHead.y, blueHead.x, blueHead.y);
     }
     // Bind trail head directly to planet's actual position.
     redOut[base + samples]  = glm::dvec2(redHead.x, redHead.y);
@@ -569,6 +633,27 @@ void PositionSolver::sampleTrailRange(const Timeline& timeline, double startTime
     samples++;
     redOut.resize(base + samples);
     blueOut.resize(base + samples);
+}
+
+// 供对拍：复刻 `sampleTrailRange` 里"给定砖 + 时刻"那一步（缓存常量 + 活值刷新 + 快路径）。
+void PositionSolver::trailPointForTest(const Timeline& timeline, int tileIdx, double t,
+                                       const TileAnimation* anim,
+                                       glm::dvec2& redOut, glm::dvec2& blueOut) {
+    TrailTileConsts c;
+    const int n = (int)timeline.tileCount();
+    loadTrailTileConsts(timeline, tileIdx, n, timeline.startTimeAt(tileIdx), c);
+    loadTrailTileConstsLive(timeline, anim, tileIdx, t, c);
+    double rx = 0, ry = 0, bx = 0, by = 0;
+    const bool isHoldTile = timeline.level()->holdLengthAt(tileIdx) >= 0;
+    if (c.tileMain && t >= c.firstStart && !isHoldTile) {
+        trailPointAt(c, t, rx, ry, bx, by);
+    } else {
+        glm::dvec2 r(0), b(0);
+        positionAtTile(timeline, t, tileIdx, r, b, anim);
+        rx = r.x; ry = r.y; bx = b.x; by = b.y;
+    }
+    redOut = glm::dvec2(rx, ry);
+    blueOut = glm::dvec2(bx, by);
 }
 
 void PositionSolver::sampleTrail(const Timeline& timeline, double t, float trailDuration,
