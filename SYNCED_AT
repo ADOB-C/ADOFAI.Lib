@@ -5,9 +5,28 @@
 # ⚠️ 2026-10 ADOCAO **重写过一次历史**（把误提交的机器绝对路径清掉：352 个提交里 50 个
 # 带着 `/Users/<用户名>/Documents/Charts/...`），所以**旧的 sha 全部失效**。重写前本库记的
 # `dc89c14` 已经不存在了 —— 现在以重写后的 sha 为准。
-ADOCAO_COMMIT=6c28a2e
-ADOCAO_COMMIT_FULL=6c28a2e75c9331d58f687005963b061da416a4eb
+ADOCAO_COMMIT=8bb391f
+ADOCAO_COMMIT_FULL=8bb391f28737e1afddf8f6f17aa5a9848f3588a8
 ADOCAO_COMMIT_DATE=2026-11-07
+# 本次同步要点（11 个提交；248 个镜像文件逐字节一致）：
+#
+#  1. **相机 `relativeTo` 的两种锚点修对了**：`Tile` 用**原始**砖位（不含 PositionTrack 偏移，
+#     权威 Player.ts:494）—— 但加载期已经把偏移烘进 tiles[i].position，所以只为**相机事件引用的
+#     那几层**记下被减掉的偏移（几百条，明确不按层记）；`Player` 跟"行星枢轴"而不是静态砖位。
+#  2. 长按带的相机 `holdOffset`（app 每帧写，只影响 lerp 目标，不进事件换算）。
+#  3. 停止后的收尾：相机原地保留、只收回关卡状态与可见性。
+#  4. `PositionSolver.cpp` 补 `<cstring>`（std::memcmp）—— 上游自己被 MinGW 咬了一次。
+#  5. 其余在 app/（手动缩放、向导页、build(cmake) 的 OBJCXX 门控、bump 7.3.0），不进镜像。
+#
+# 导出侧这轮没报警（新字段 m_camAnchor* 都是派生量）。但记一笔：**"原始砖位"现在有了第二个
+# 用处**，`rawTilePositionAt()` 就是现成口径 —— 将来若要把 PositionTrack 与 MoveCamera 混排
+# 写回明文，别再自己重算一遍。
+#
+# 上游工作区目前有 14 项未提交（app/ 为主）+ 一个未跟踪的 tests/charts/mp3_slow_straight.adofai。
+# 按规矩从 `git archive HEAD` 镜像，未提交的改动和被生成的谱面都不会被拽进来。
+#
+# 上一次同步：6c28a2e（拖尾的长按滑动圆心）。
+
 # 本次同步要点（15 个提交；247 个镜像文件逐字节一致）：
 #
 #  1. 镜像区只有 `core/timeline/PositionSolver.{hpp,cpp}`：拖尾在长按砖上要按**滑动圆心**算

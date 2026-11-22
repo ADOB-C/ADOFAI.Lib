@@ -499,6 +499,25 @@ checkpoints、像素门槛），一旦不同平台/不同 TU 的舍入不一致�
 新增 `trail_parity_test`（只链 core）：**每个采样点与 `positionAtTile` 逐位比较**。
 这类"看起来是一条线"的渲染 bug，靠像素比对是后知后觉，靠"采样值与权威函数逐位相同"才是前置护栏。
 
+### 第十五次对齐（8bb391f，11 个提交）：相机锚点用**原始**砖位
+
+这轮几乎全在相机，而且修的是同一类"烘进去了就回不来"的问题：
+
+* **`relativeTo: Tile` 的锚点要用原始砖位**（不含 PositionTrack 偏移）。但加载期已经把
+  PositionTrack 烘进了 `tiles[i].position` —— 原始值没了。解法很克制：**只为相机 Tile 事件
+  引用的那几层**记下被减掉的偏移（`m_camAnchorFloors` / `m_camAnchorOffset`，最多几百条），
+  注释里明确写"绝不能按层记，那等于 16 B/砖"。
+* `relativeTo: Player` 跟"行星枢轴"，不再跟加载期烘好的静态砖位。
+* 长按带：相机跟随目标的 `holdOffset`（每帧由 app 写、只影响 lerp 目标，
+  **不进** `relativeTo: Player` 的事件换算）。
+* 播放停止的收尾：相机**原地保留**、只收回关卡状态与可见性（之前"停下后看不见轨道"）。
+* `PositionSolver.cpp` 漏 `<cstring>`（`std::memcmp`）—— 上游自己也被 MinGW 咬了一次。
+
+导出侧这轮**没报警**，而且是对的：`m_camAnchor*` 是派生量（加载期算出来的相机锚点），
+不进建模指纹。但它提醒了一件事 —— **"原始砖位"这个概念现在有了第二个用处**
+（相机锚点）。哪天导出需要它（比如把 `.adofai` 写回去时 PositionTrack 与 MoveCamera 混排），
+`rawTilePositionAt()` 就是现成的口径。
+
 顺带一提：`export_independent` 在第二轮先红了 —— 它把 `.adocao` 的版本号**写死成 2**，
 而上游升到了 v3（分块列 + `Derived` 段）。那不是库的 bug，但正是"独立实现"该做的事：
 它把格式变更逼到台面上。现在改成从 `AdocaoFormat.hpp` 读 `kVersion` 对账 ——
